@@ -1,46 +1,27 @@
-"""TTS service — multi-provider text-to-speech with automatic fallback.
+"""TTS service with provider cascade and multilingual voice routing."""
 
-Provider cascade (configurable via TTS_PROVIDER_ORDER):
-  1. ElevenLabs API  — fastest, highest quality, streaming support
-  2. OpenAI TTS API  — high quality, reliable
-  3. Edge-TTS        — free fallback, no API key needed
+from __future__ import annotations
 
-Character-budget awareness:
-  ElevenLabs free tier = 10,000 chars/month per key.  The key manager tracks
-  characters consumed and proactively switches to the next key before the limit
-  is reached.  When ALL ElevenLabs keys are exhausted for the month, the cascade
-  seamlessly falls through to the next provider (OpenAI → Edge-TTS) with zero
-  audio disruption.
-
-Features:
-  • Character-budget tracking per ElevenLabs key (persisted across restarts)
-  • API key rotation via APIKeyManager (handles rate-limits + quota exhaustion)
-  • Parallel chunk processing (async semaphore-bounded)
-  • Retry logic with exponential backoff per chunk
-  • Sentence-aware text splitting (configurable chunk size)
-  • Progress callback for real-time UI updates
-"""
-
+import asyncio
+import inspect
 import io
 import logging
-import asyncio
-from typing import Callable, Awaitable
+import re
+from typing import Awaitable, Callable
 
-import httpx
 import edge_tts
+import httpx
 
 from app.core.config import settings
 from app.services.api_key_manager import APIKeyManager
 
 logger = logging.getLogger(__name__)
 
-# ── Constants ─────────────────────────────────────────────────────────
-
-_TTS_CHUNK_TIMEOUT = 60          # seconds per TTS call
-_TTS_MAX_RETRIES = 3             # retries per chunk
-_MIN_VALID_MP3_BYTES = 256       # minimum bytes for a valid audio frame
-
-# ── ElevenLabs free-tier limit ────────────────────────────────────────
+# Constants
+_TTS_CHUNK_TIMEOUT = 60
+_TTS_MAX_RETRIES = 3
+_MIN_VALID_MP3_BYTES = 256
+_SENTENCE_BOUNDARY_CHARS = ".!?।॥"
 
 _ELEVENLABS_MONTHLY_CHAR_LIMIT = int(
     settings.ELEVENLABS_MONTHLY_CHAR_LIMIT
@@ -48,25 +29,22 @@ _ELEVENLABS_MONTHLY_CHAR_LIMIT = int(
     else 10_000
 )
 
-# ── API Key Managers (initialised once at module load) ────────────────
-
+# API key managers
 _elevenlabs_keys = APIKeyManager(
     keys=settings.ELEVENLABS_API_KEYS,
     service_name="elevenlabs",
     char_limit_per_key=_ELEVENLABS_MONTHLY_CHAR_LIMIT,
-    char_safety_margin=500,  # switch 500 chars before the limit
+    char_safety_margin=500,
 )
 _openai_tts_keys = APIKeyManager(
     keys=settings.OPENAI_TTS_API_KEYS,
     service_name="openai-tts",
 )
 
-# Persistent HTTP client for TTS API calls (connection pooling)
 _http_client: httpx.AsyncClient | None = None
 
 
 async def _get_http_client() -> httpx.AsyncClient:
-    """Lazily create a persistent httpx client for TTS requests."""
     global _http_client
     if _http_client is None or _http_client.is_closed:
         _http_client = httpx.AsyncClient(
@@ -77,132 +55,163 @@ async def _get_http_client() -> httpx.AsyncClient:
 
 
 async def close_tts_client() -> None:
-    """Close the persistent HTTP client. Call on app shutdown."""
     global _http_client
     if _http_client and not _http_client.is_closed:
         await _http_client.aclose()
         _http_client = None
 
 
-# ══════════════════════════════════════════════════════════════════════
-# TEXT SPLITTING
-# ══════════════════════════════════════════════════════════════════════
+def _normalize_language(language: str | None) -> str:
+    if not language:
+        return "en"
+    value = language.strip().lower()
+    aliases = {
+        "english": "en",
+        "hindi": "hi",
+        "marathi": "mr",
+        "auto": "en",
+    }
+    return aliases.get(value, value if value in {"en", "hi", "mr", "mixed"} else "en")
+
+
+def _split_long_sentence(sentence: str, max_chars: int) -> list[str]:
+    """Split very long sentences on whitespace if needed."""
+    sentence = sentence.strip()
+    if len(sentence) <= max_chars:
+        return [sentence] if sentence else []
+
+    words = sentence.split()
+    if not words:
+        return [sentence[i:i + max_chars] for i in range(0, len(sentence), max_chars)]
+
+    parts: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if current and len(candidate) > max_chars:
+            parts.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        parts.append(current)
+    return parts
+
 
 def split_text_into_chunks(text: str, max_chars: int | None = None) -> list[str]:
-    """Split long text into smaller chunks on sentence boundaries.
-
-    Default chunk size comes from settings.TTS_CHUNK_SIZE (1500 chars).
-    """
+    """Split long text into chunks using sentence boundaries."""
     max_chars = max_chars or settings.TTS_CHUNK_SIZE
-
     if len(text) <= max_chars:
         return [text]
+
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if not normalized:
+        return [""]
+
+    sentences = re.split(r"(?<=[.!?।॥])\s+", normalized)
+    if len(sentences) == 1:
+        sentences = _split_long_sentence(normalized, max_chars)
+    else:
+        expanded: list[str] = []
+        for sentence in sentences:
+            expanded.extend(_split_long_sentence(sentence, max_chars))
+        sentences = expanded
 
     chunks: list[str] = []
     current = ""
 
-    # Split into sentences
-    sentences: list[str] = []
-    temp = ""
-    for char in text:
-        temp += char
-        if char in ".!?" and len(temp) > 1:
-            sentences.append(temp.strip())
-            temp = ""
-    if temp.strip():
-        sentences.append(temp.strip())
-
     for sentence in sentences:
-        if len(current) + len(sentence) + 1 > max_chars and current:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        candidate = f"{current} {sentence}".strip() if current else sentence
+        if current and len(candidate) > max_chars:
             chunks.append(current.strip())
             current = sentence
         else:
-            current = current + " " + sentence if current else sentence
+            current = candidate
 
     if current.strip():
         chunks.append(current.strip())
 
-    return chunks
+    return chunks or [normalized]
 
 
-# ══════════════════════════════════════════════════════════════════════
-# PROVIDER: ELEVENLABS (with character-budget tracking)
-# ══════════════════════════════════════════════════════════════════════
+def _elevenlabs_voice_and_model(language: str) -> tuple[str, str]:
+    """Pick ElevenLabs voice/model by language."""
+    normalized = _normalize_language(language)
+    if normalized == "hi":
+        return settings.ELEVENLABS_VOICE_ID_HI, settings.ELEVENLABS_MULTILINGUAL_MODEL_ID
+    if normalized == "mr":
+        return settings.ELEVENLABS_VOICE_ID_MR, settings.ELEVENLABS_MULTILINGUAL_MODEL_ID
+    if normalized == "mixed":
+        return settings.ELEVENLABS_VOICE_ID_HI, settings.ELEVENLABS_MULTILINGUAL_MODEL_ID
+    return settings.ELEVENLABS_VOICE_ID, settings.ELEVENLABS_MODEL_ID
 
-async def _elevenlabs_tts(text: str) -> bytes:
-    """Generate speech via ElevenLabs API with character-budget awareness.
 
-    Uses get_key_for_text() to pick a key that has enough remaining monthly
-    budget.  After a successful call, records the characters consumed.
-    When all keys are exhausted, raises RuntimeError so the cascade moves
-    to the next provider seamlessly.
-    """
+def _edge_voice_for_language(language: str) -> str:
+    normalized = _normalize_language(language)
+    if normalized == "hi":
+        return settings.EDGE_TTS_VOICE_HI
+    if normalized == "mr":
+        return settings.EDGE_TTS_VOICE_MR
+    if normalized == "mixed":
+        return settings.EDGE_TTS_VOICE_HI
+    return settings.EDGE_TTS_VOICE
+
+
+async def _elevenlabs_tts(text: str, language: str = "en") -> bytes:
     if not _elevenlabs_keys.has_keys:
         raise RuntimeError("No ElevenLabs API keys configured.")
 
-    # Check if ALL keys have exhausted their monthly character budget
     if _elevenlabs_keys.all_keys_exhausted():
         remaining = _elevenlabs_keys.total_chars_remaining
-        logger.warning(
-            "[elevenlabs] All keys have exhausted their monthly character budget "
-            "(%d chars remaining across all keys). Falling through to next provider.",
-            remaining,
-        )
         raise RuntimeError(
             f"All ElevenLabs keys exhausted for this month ({remaining} chars remaining). "
             "Falling through to next TTS provider."
         )
 
-    # Pick a key with enough budget for this text
     key = _elevenlabs_keys.get_key_for_text(text)
-    voice_id = settings.ELEVENLABS_VOICE_ID
-    model_id = settings.ELEVENLABS_MODEL_ID
-
+    voice_id, model_id = _elevenlabs_voice_and_model(language)
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
+
     headers = {
         "xi-api-key": key,
         "Content-Type": "application/json",
         "Accept": "audio/mpeg",
     }
+    normalized_language = _normalize_language(language)
     payload = {
         "text": text,
         "model_id": model_id,
         "voice_settings": {
-            "stability": 0.5,
+            "stability": 0.45,
             "similarity_boost": 0.75,
-            "style": 0.0,
+            "style": 0.1 if normalized_language in {"hi", "mr", "mixed"} else 0.0,
             "use_speaker_boost": True,
         },
     }
+    if normalized_language in {"hi", "mr"}:
+        payload["language_code"] = normalized_language
 
     client = await _get_http_client()
     try:
         response = await client.post(url, json=payload, headers=headers)
-
         if response.status_code != 200:
-            error_msg = response.text[:200]
+            error_msg = response.text[:300]
             _elevenlabs_keys.report_failure(key, response.status_code, error_msg)
             raise RuntimeError(f"ElevenLabs API error {response.status_code}: {error_msg}")
 
         audio_bytes = response.content
         _elevenlabs_keys.report_success(key)
-
-        # Record character usage — this triggers proactive key rotation
-        # when the key approaches its monthly limit
         _elevenlabs_keys.report_chars_used(key, len(text))
-
         return audio_bytes
-
     except httpx.RequestError as exc:
         _elevenlabs_keys.report_failure(key, error_msg=str(exc))
         raise RuntimeError(f"ElevenLabs request error: {exc}") from exc
 
 
-# ══════════════════════════════════════════════════════════════════════
-# PROVIDER: OPENAI TTS
-# ══════════════════════════════════════════════════════════════════════
-
-async def _openai_tts(text: str) -> bytes:
+async def _openai_tts(text: str, language: str = "en") -> bytes:
     """Generate speech via OpenAI TTS API."""
     if not _openai_tts_keys.has_keys:
         raise RuntimeError("No OpenAI TTS API keys configured.")
@@ -223,59 +232,45 @@ async def _openai_tts(text: str) -> bytes:
     client = await _get_http_client()
     try:
         response = await client.post(url, json=payload, headers=headers)
-
         if response.status_code != 200:
-            error_msg = response.text[:200]
+            error_msg = response.text[:300]
             _openai_tts_keys.report_failure(key, response.status_code, error_msg)
             raise RuntimeError(f"OpenAI TTS error {response.status_code}: {error_msg}")
 
         audio_bytes = response.content
         _openai_tts_keys.report_success(key)
         return audio_bytes
-
     except httpx.RequestError as exc:
         _openai_tts_keys.report_failure(key, error_msg=str(exc))
         raise RuntimeError(f"OpenAI TTS request error: {exc}") from exc
 
 
-# ══════════════════════════════════════════════════════════════════════
-# PROVIDER: EDGE-TTS (free fallback)
-# ══════════════════════════════════════════════════════════════════════
-
-async def _edge_tts(text: str) -> bytes:
-    """Generate speech via free Microsoft Edge TTS (no API key needed)."""
-    communicate = edge_tts.Communicate(text, settings.EDGE_TTS_VOICE)
+async def _edge_tts(text: str, language: str = "en") -> bytes:
+    """Generate speech via Microsoft Edge TTS (no API key required)."""
+    voice = _edge_voice_for_language(language)
+    communicate = edge_tts.Communicate(text, voice)
     buf = io.BytesIO()
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
             buf.write(chunk["data"])
+
     result = buf.getvalue()
     if len(result) < _MIN_VALID_MP3_BYTES:
         raise ValueError(f"Edge-TTS returned empty audio ({len(result)} bytes)")
     return result
 
 
-# ══════════════════════════════════════════════════════════════════════
-# PROVIDER CASCADE (with retry + seamless fallback)
-# ══════════════════════════════════════════════════════════════════════
+ProviderFn = Callable[..., Awaitable[bytes]]
 
-# Map provider name → callable
-_PROVIDERS: dict[str, Callable[[str], Awaitable[bytes]]] = {
+_PROVIDERS: dict[str, ProviderFn] = {
     "elevenlabs": _elevenlabs_tts,
     "openai": _openai_tts,
     "edge": _edge_tts,
 }
 
 
-def _get_provider_order() -> list[tuple[str, Callable[[str], Awaitable[bytes]]]]:
-    """Return the ordered list of available TTS providers.
-
-    Skips providers with no keys (except edge which is free).
-    Does NOT skip ElevenLabs even if all keys are budget-exhausted — the
-    provider function itself handles that and raises RuntimeError, which
-    the cascade catches and moves on.
-    """
-    order = []
+def _get_provider_order() -> list[tuple[str, ProviderFn]]:
+    order: list[tuple[str, ProviderFn]] = []
     for name in settings.TTS_PROVIDER_ORDER:
         fn = _PROVIDERS.get(name)
         if fn is None:
@@ -285,92 +280,77 @@ def _get_provider_order() -> list[tuple[str, Callable[[str], Awaitable[bytes]]]]
         if name == "openai" and not _openai_tts_keys.has_keys:
             continue
         order.append((name, fn))
-    # Always include edge-tts as ultimate fallback
-    if not any(n == "edge" for n, _ in order):
+
+    if not any(name == "edge" for name, _ in order):
         order.append(("edge", _edge_tts))
     return order
 
 
-async def text_to_mp3_bytes(text: str) -> bytes:
-    """Convert text to MP3 using the configured provider cascade.
+async def _call_provider(provider_fn: ProviderFn, text: str, language: str) -> bytes:
+    """Call providers with compatibility for legacy single-arg mocks/tests."""
+    try:
+        signature = inspect.signature(provider_fn)
+    except (TypeError, ValueError):
+        signature = None
 
-    Tries each provider in order. Within each provider, retries up to
-    _TTS_MAX_RETRIES times with exponential backoff.
+    if signature and len(signature.parameters) < 2:
+        return await provider_fn(text)  # type: ignore[misc]
+    return await provider_fn(text, language)
 
-    When ElevenLabs keys run out of monthly characters, the cascade
-    seamlessly falls through to the next provider — the audio output
-    is uninterrupted.
-    """
+
+async def text_to_mp3_bytes(text: str, language: str = "en") -> bytes:
+    """Convert text to MP3 using configured provider cascade."""
     providers = _get_provider_order()
+    normalized_language = _normalize_language(language)
     last_error: Exception | None = None
 
     for provider_name, provider_fn in providers:
         for attempt in range(1, _TTS_MAX_RETRIES + 1):
             try:
                 result = await asyncio.wait_for(
-                    provider_fn(text),
+                    _call_provider(provider_fn, text, normalized_language),
                     timeout=_TTS_CHUNK_TIMEOUT,
                 )
                 if len(result) < _MIN_VALID_MP3_BYTES:
                     raise ValueError(f"Audio too small ({len(result)} bytes)")
                 return result
-
             except asyncio.CancelledError:
                 raise
-
             except asyncio.TimeoutError:
                 last_error = TimeoutError(
                     f"{provider_name} TTS timed out (attempt {attempt}/{_TTS_MAX_RETRIES})"
                 )
                 logger.warning("%s", last_error)
-
             except Exception as exc:
                 last_error = exc
-                # If all ElevenLabs keys are budget-exhausted, skip retries
-                # and fall through to next provider immediately
                 if "exhausted" in str(exc).lower() and provider_name == "elevenlabs":
-                    logger.info(
-                        "ElevenLabs monthly quota exhausted — seamlessly switching to next provider."
-                    )
+                    logger.info("ElevenLabs quota exhausted, moving to next provider.")
                     break
                 logger.warning(
                     "%s TTS failed (attempt %s/%s): %s",
-                    provider_name, attempt, _TTS_MAX_RETRIES, exc,
+                    provider_name,
+                    attempt,
+                    _TTS_MAX_RETRIES,
+                    exc,
                 )
 
             if attempt < _TTS_MAX_RETRIES:
-                backoff = min(2 ** attempt, 8)
-                await asyncio.sleep(backoff)
+                await asyncio.sleep(min(2 ** attempt, 8))
 
         logger.warning("All retries exhausted for %s, trying next provider...", provider_name)
 
-    raise RuntimeError(
-        f"All TTS providers failed after retries. Last error: {last_error}"
-    )
+    raise RuntimeError(f"All TTS providers failed after retries. Last error: {last_error}")
 
-
-# ══════════════════════════════════════════════════════════════════════
-# PARALLEL CHUNK PROCESSING
-# ══════════════════════════════════════════════════════════════════════
 
 async def generate_chapter_audio(
     text: str,
     on_chunk_complete: Callable[[int, int], None] | None = None,
+    language: str = "en",
 ) -> bytes:
-    """Generate audio for a full chapter by processing chunks in parallel.
+    """Generate chapter audio using chunked parallel TTS."""
+    if not text or not text.strip():
+        raise ValueError("No text to convert to audio")
 
-    Parameters
-    ----------
-    text : str
-        The full chapter text.
-    on_chunk_complete : callable, optional
-        Called with (completed_count, total_count) after each chunk finishes.
-
-    Returns
-    -------
-    bytes
-        Concatenated MP3 audio for the entire chapter.
-    """
     chunks = split_text_into_chunks(text)
     total = len(chunks)
 
@@ -378,23 +358,29 @@ async def generate_chapter_audio(
         raise ValueError("No text to convert to audio")
 
     if total == 1:
-        audio = await text_to_mp3_bytes(chunks[0])
+        if _normalize_language(language) == "en":
+            audio = await text_to_mp3_bytes(chunks[0])
+        else:
+            audio = await text_to_mp3_bytes(chunks[0], language)
         if on_chunk_complete:
             on_chunk_complete(1, 1)
         return audio
 
-    # Process chunks in parallel with bounded concurrency
     max_parallel = settings.TTS_PARALLEL_CHUNKS
     semaphore = asyncio.Semaphore(max_parallel)
     results: list[bytes | Exception] = [b""] * total
     completed_count = 0
     lock = asyncio.Lock()
+    normalized_language = _normalize_language(language)
 
     async def _process_chunk(index: int, chunk_text: str) -> None:
         nonlocal completed_count
         async with semaphore:
             try:
-                audio = await text_to_mp3_bytes(chunk_text)
+                if normalized_language == "en":
+                    audio = await text_to_mp3_bytes(chunk_text)
+                else:
+                    audio = await text_to_mp3_bytes(chunk_text, normalized_language)
                 results[index] = audio
             except Exception as exc:
                 results[index] = exc
@@ -406,8 +392,8 @@ async def generate_chapter_audio(
                         on_chunk_complete(completed_count, total)
 
     tasks = [
-        asyncio.create_task(_process_chunk(i, chunk))
-        for i, chunk in enumerate(chunks)
+        asyncio.create_task(_process_chunk(index, chunk))
+        for index, chunk in enumerate(chunks)
     ]
 
     errors: list[Exception] = []
@@ -415,50 +401,40 @@ async def generate_chapter_audio(
         try:
             await task
         except asyncio.CancelledError:
-            for t in tasks:
-                t.cancel()
+            for item in tasks:
+                item.cancel()
             raise
         except Exception as exc:
             errors.append(exc)
 
     if errors:
-        successful = [r for r in results if isinstance(r, bytes) and len(r) > 0]
+        successful = [r for r in results if isinstance(r, bytes) and r]
         if not successful:
-            raise RuntimeError(
-                f"All {total} chunks failed. Last error: {errors[-1]}"
-            )
+            raise RuntimeError(f"All {total} chunks failed. Last error: {errors[-1]}")
         logger.warning(
-            "%d/%d chunks failed during parallel generation. Continuing with %d successful.",
-            len(errors), total, len(successful),
+            "%d/%d chunks failed during generation. Continuing with %d successful chunks.",
+            len(errors),
+            total,
+            len(successful),
         )
 
-    final_audio = b"".join(
-        r for r in results if isinstance(r, bytes) and len(r) > 0
-    )
-
+    final_audio = b"".join(r for r in results if isinstance(r, bytes) and r)
     if len(final_audio) < _MIN_VALID_MP3_BYTES:
-        raise ValueError("Final concatenated audio is too small — generation likely failed")
-
+        raise ValueError("Final concatenated audio is too small. Generation likely failed.")
     return final_audio
 
 
-# ══════════════════════════════════════════════════════════════════════
-# UTILITIES
-# ══════════════════════════════════════════════════════════════════════
-
 def get_audio_duration_seconds(audio_bytes: bytes) -> int:
-    """Estimate duration of MP3 from byte size. ~16kBps for typical TTS output."""
+    """Estimate MP3 duration from byte size."""
     return max(1, len(audio_bytes) // 16000)
 
 
 def get_active_provider() -> str:
-    """Return the name of the provider that would be used for the next call."""
     providers = _get_provider_order()
     return providers[0][0] if providers else "none"
 
 
 def get_tts_stats() -> dict:
-    """Return usage statistics for all TTS key managers."""
     return {
         "active_provider": get_active_provider(),
         "elevenlabs": _elevenlabs_keys.get_stats() if _elevenlabs_keys.has_keys else [],
@@ -468,3 +444,14 @@ def get_tts_stats() -> dict:
         "openai_tts": _openai_tts_keys.get_stats() if _openai_tts_keys.has_keys else [],
         "provider_order": settings.TTS_PROVIDER_ORDER,
     }
+
+
+def add_tts_key(provider: str, api_key: str) -> bool:
+    managers = {
+        "elevenlabs": _elevenlabs_keys,
+        "openai-tts": _openai_tts_keys,
+    }
+    manager = managers.get(provider)
+    if manager is None:
+        return False
+    return manager.add_key(api_key)

@@ -100,7 +100,7 @@ export default function LibraryPage() {
     <div className="page-shell space-y-10 pb-24">
       <div className="animate-fade-in-up">
         <div className="flex items-center gap-4">
-          <div className="flex size-12 items-center justify-center rounded-2xl border border-border/70 bg-card/70 backdrop-blur-xl">
+          <div className="flex size-12 items-center justify-center rounded-2xl border border-border/80 bg-card/85 backdrop-blur-xl">
             <LibraryIcon className="size-5 text-foreground" />
           </div>
           <div>
@@ -144,7 +144,7 @@ export default function LibraryPage() {
         >
           <div className="flex items-center gap-3">
             <h2 className="text-xl font-semibold tracking-tight text-foreground">{group.genre}</h2>
-            <span className="rounded-full border border-border/70 bg-card/50 px-2.5 py-0.5 text-xs text-muted-foreground">
+            <span className="rounded-full border border-border/80 bg-card/70 px-2.5 py-0.5 text-xs text-muted-foreground">
               {group.books.length}
             </span>
           </div>

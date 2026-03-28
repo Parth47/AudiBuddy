@@ -1,18 +1,33 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertCircle, AlertTriangle, CheckCircle, FileText, ImageIcon, Loader2, Upload, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAdmin } from "@/lib/admin-context";
-import { retryWithFallback, uploadBook, UploadLLMError } from "@/lib/api";
+import { addApiKey, retryWithFallback, uploadBook, UploadLLMError, UploadQuotaError } from "@/lib/api";
 
 const genres = [
   "General", "Fantasy", "Science Fiction", "Romance", "Mystery", "Horror",
   "Non-Fiction", "Biography", "History", "Self-Help", "Business",
   "Technology", "Philosophy", "Poetry", "Children",
+];
+
+const languageOptions = [
+  { value: "auto", label: "Auto detect" },
+  { value: "en", label: "English" },
+  { value: "hi", label: "Hindi (Devanagari)" },
+  { value: "mr", label: "Marathi (Devanagari)" },
+];
+
+const translationOptions = [
+  { value: "auto", label: "Auto (Hindi/Marathi → English)" },
+  { value: "none", label: "No translation" },
+  { value: "en", label: "English" },
+  { value: "hi", label: "Hindi" },
+  { value: "mr", label: "Marathi" },
 ];
 
 export default function UploadPage() {
@@ -27,12 +42,35 @@ export default function UploadPage() {
   const [title, setTitle] = useState("");
   const [author, setAuthor] = useState("");
   const [genre, setGenre] = useState("General");
+  const [language, setLanguage] = useState("auto");
+  const [translationTarget, setTranslationTarget] = useState("auto");
   const [description, setDescription] = useState("");
   const [uploading, setUploading] = useState(false);
-  const [step, setStep] = useState<"form" | "processing" | "done" | "error" | "llm_failed">("form");
+  const [step, setStep] = useState<"form" | "processing" | "done" | "error" | "llm_failed" | "quota_exhausted">("form");
   const [error, setError] = useState("");
   const [bookId, setBookId] = useState("");
   const [retrying, setRetrying] = useState(false);
+  const [exhaustedProvider, setExhaustedProvider] = useState("");
+  const [isAuthError, setIsAuthError] = useState(false);
+  const [newApiKey, setNewApiKey] = useState("");
+  const [addingKey, setAddingKey] = useState(false);
+  const [keyError, setKeyError] = useState("");
+  const [processingHintIndex, setProcessingHintIndex] = useState(0);
+
+  const processingHints = [
+    "Uploading PDF and validating file structure...",
+    "Extracting text layers and preserving Unicode characters...",
+    "Running OCR fallback for scanned pages when needed...",
+    "Detecting language, chapters, and translation preferences...",
+  ];
+
+  useEffect(() => {
+    if (step !== "processing") return;
+    const interval = window.setInterval(() => {
+      setProcessingHintIndex((prev) => (prev + 1) % processingHints.length);
+    }, 3500);
+    return () => window.clearInterval(interval);
+  }, [step, processingHints.length]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const nextFile = e.target.files?.[0];
@@ -67,8 +105,11 @@ export default function UploadPage() {
     setAuthor("");
     setDescription("");
     setGenre("General");
+    setLanguage("auto");
+    setTranslationTarget("auto");
     setError("");
     setBookId("");
+    setProcessingHintIndex(0);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -76,6 +117,7 @@ export default function UploadPage() {
     if (!file || !title) return;
 
     setUploading(true);
+    setProcessingHintIndex(0);
     setStep("processing");
     setError("");
 
@@ -85,6 +127,8 @@ export default function UploadPage() {
       formData.append("title", title);
       formData.append("author", author || "Unknown");
       formData.append("genre", genre);
+      formData.append("language", language);
+      formData.append("translation_target", translationTarget);
       formData.append("description", description);
       if (coverFile) {
         formData.append("cover_image", coverFile);
@@ -94,7 +138,13 @@ export default function UploadPage() {
       setBookId(book.id);
       setStep("done");
     } catch (err) {
-      if (err instanceof UploadLLMError) {
+      if (err instanceof UploadQuotaError) {
+        setBookId(err.data.book_id);
+        setError(err.data.message);
+        setExhaustedProvider(err.data.exhausted_provider || "gemini");
+        setIsAuthError(err.data.error === "llm_auth_failed");
+        setStep("quota_exhausted");
+      } else if (err instanceof UploadLLMError) {
         setBookId(err.data.book_id);
         setError(err.data.message);
         setStep("llm_failed");
@@ -121,6 +171,60 @@ export default function UploadPage() {
       setStep("error");
     } finally {
       setRetrying(false);
+    }
+  };
+
+  const handleAddApiKeyAndRetry = async () => {
+    if (!newApiKey.trim() || !exhaustedProvider) return;
+    setAddingKey(true);
+    setKeyError("");
+
+    try {
+      await addApiKey(exhaustedProvider, newApiKey.trim(), true);
+      // Key added — now retry the upload with the same file
+      setNewApiKey("");
+      setStep("processing");
+
+      const formData = new FormData();
+      formData.append("file", file!);
+      formData.append("title", title);
+      formData.append("author", author || "Unknown");
+      formData.append("genre", genre);
+      formData.append("language", language);
+      formData.append("translation_target", translationTarget);
+      formData.append("description", description);
+      if (coverFile) formData.append("cover_image", coverFile);
+
+      // If the book was already created, retry with fallback endpoint
+      // (which re-downloads the PDF from storage). Otherwise upload fresh.
+      if (bookId) {
+        // Delete old failed book and re-upload
+        const book = await uploadBook(formData);
+        setBookId(book.id);
+      } else {
+        const book = await uploadBook(formData);
+        setBookId(book.id);
+      }
+      setStep("done");
+    } catch (err) {
+      if (err instanceof UploadQuotaError) {
+        const isAuth = err.data.error === "llm_auth_failed";
+        setIsAuthError(isAuth);
+        setKeyError(
+          isAuth
+            ? "The new key is also invalid or the API is not enabled. Check your cloud project settings."
+            : "The new key also appears to be quota-exhausted. Try a different key."
+        );
+        setStep("quota_exhausted");
+      } else if (err instanceof UploadLLMError) {
+        setBookId(err.data.book_id);
+        setError(err.data.message);
+        setStep("llm_failed");
+      } else {
+        setKeyError(err instanceof Error ? err.message : "Failed to add key");
+      }
+    } finally {
+      setAddingKey(false);
     }
   };
 
@@ -162,6 +266,7 @@ export default function UploadPage() {
             <ul className="mt-3 space-y-2 text-sm leading-6 text-muted-foreground">
               <li>Use a clean PDF with readable chapter headings for the best audio segmentation.</li>
               <li>Optional cover art will be used across cards and the detail page.</li>
+              <li>For Hindi/Marathi scanned PDFs, keep text sharp and high contrast for OCR accuracy.</li>
             </ul>
           </div>
         </div>
@@ -271,6 +376,35 @@ export default function UploadPage() {
               </div>
 
               <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">Language</label>
+                <select
+                  value={language}
+                  onChange={(e) => setLanguage(e.target.value)}
+                  className="apple-field h-11 w-full rounded-xl sm:h-12 sm:rounded-2xl"
+                >
+                  {languageOptions.map((item) => (
+                    <option key={item.value} value={item.value}>{item.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">Translation Target</label>
+                <select
+                  value={translationTarget}
+                  onChange={(e) => setTranslationTarget(e.target.value)}
+                  className="apple-field h-11 w-full rounded-xl sm:h-12 sm:rounded-2xl"
+                >
+                  {translationOptions.map((item) => (
+                    <option key={item.value} value={item.value}>{item.label}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Auto mode translates detected Hindi/Marathi text to English before speech generation.
+                </p>
+              </div>
+
+              <div className="space-y-2">
                 <label className="text-sm font-medium text-foreground">Description</label>
                 <textarea
                   value={description}
@@ -296,7 +430,10 @@ export default function UploadPage() {
               <div>
                 <h2 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">Processing your book</h2>
                 <p className="mt-2 max-w-md text-sm text-muted-foreground sm:mt-3">
-                  Extracting text and detecting chapters. This may take a moment for larger books.
+                  {processingHints[processingHintIndex]}
+                </p>
+                <p className="mt-2 max-w-md text-xs text-muted-foreground">
+                  This can take longer for large files, mixed-language content, or scanned pages.
                 </p>
               </div>
             </div>
@@ -357,6 +494,84 @@ export default function UploadPage() {
                   Try Different File
                 </Button>
               </div>
+            </div>
+          )}
+
+          {step === "quota_exhausted" && (
+            <div className="flex min-h-[400px] flex-col items-center justify-center space-y-5 text-center sm:min-h-[480px]">
+              <div className="flex size-14 items-center justify-center rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 sm:size-16">
+                <AlertTriangle className="size-6 sm:size-7" />
+              </div>
+              <div>
+                <h2 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
+                  {isAuthError ? "API Key Error" : "API Quota Exhausted"}
+                </h2>
+                <p className="mt-2 max-w-md text-sm text-muted-foreground sm:mt-3">
+                  {isAuthError
+                    ? `Your ${exhaustedProvider || "LLM"} API key appears to be invalid, or the API is not enabled in your cloud project. Choose how to continue:`
+                    : `Your ${exhaustedProvider || "LLM"} API key has reached its quota limit. Choose how to continue:`}
+                </p>
+              </div>
+
+              {/* Option A: Enter New API Key */}
+              <div className="w-full max-w-sm space-y-3 rounded-2xl border border-border/60 bg-muted/20 p-4">
+                <p className="text-sm font-medium text-foreground">Option A: Provide a new API key</p>
+                <Input
+                  value={newApiKey}
+                  onChange={(e) => { setNewApiKey(e.target.value); setKeyError(""); }}
+                  placeholder={`Enter new ${exhaustedProvider || "LLM"} API key`}
+                  type="password"
+                  className="apple-field h-10 rounded-xl text-sm"
+                />
+                {keyError && <p className="text-xs text-destructive">{keyError}</p>}
+                <Button
+                  onClick={handleAddApiKeyAndRetry}
+                  disabled={!newApiKey.trim() || addingKey}
+                  className="h-10 w-full rounded-full text-sm"
+                >
+                  {addingKey ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      <span>Adding key & retrying...</span>
+                    </>
+                  ) : (
+                    "Add Key & Retry"
+                  )}
+                </Button>
+              </div>
+
+              {/* Separator */}
+              <div className="flex w-full max-w-sm items-center gap-3">
+                <div className="h-px flex-1 bg-border/50" />
+                <span className="text-xs uppercase tracking-widest text-muted-foreground">or</span>
+                <div className="h-px flex-1 bg-border/50" />
+              </div>
+
+              {/* Option B: Use Fallback */}
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <Button
+                  onClick={handleRetryWithFallback}
+                  disabled={retrying}
+                  variant="outline"
+                  className="h-10 rounded-full px-5 sm:h-11"
+                >
+                  {retrying ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      <span>Processing...</span>
+                    </>
+                  ) : (
+                    "Use Fallback Mode"
+                  )}
+                </Button>
+                <Button variant="ghost" onClick={resetForm} className="h-10 rounded-full px-5 sm:h-11">
+                  Try Different File
+                </Button>
+              </div>
+
+              <p className="max-w-sm text-xs text-muted-foreground">
+                Fallback mode uses pattern matching to detect chapters. It is less accurate but does not require an API key.
+              </p>
             </div>
           )}
 

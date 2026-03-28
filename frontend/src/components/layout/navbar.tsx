@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Headphones, Menu, Search, Upload, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import ThemeToggle from "@/components/layout/theme-toggle";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,19 @@ export default function Navbar() {
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
+
+  // Close mobile menu on Escape key
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMobileOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [mobileOpen]);
+
+  // Close mobile menu on route change
+  const closeMobile = useCallback(() => setMobileOpen(false), []);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -102,37 +115,45 @@ export default function Navbar() {
         </div>
 
         {mobileOpen && (
-          <div className="glass-panel mt-3 rounded-[2rem] p-4 md:hidden">
-            <form onSubmit={handleSearch} className="mb-4">
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search the library"
-                  className="apple-input pl-11"
-                />
-              </div>
-            </form>
+          <>
+            {/* Invisible backdrop — click outside to close mobile menu */}
+            <div
+              className="fixed inset-0 z-[-1] md:hidden"
+              aria-hidden="true"
+              onClick={closeMobile}
+            />
+            <div className="glass-panel mt-3 rounded-[2rem] p-4 md:hidden">
+              <form onSubmit={handleSearch} className="mb-4">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="Search the library"
+                    className="apple-input pl-11"
+                  />
+                </div>
+              </form>
 
-            <div className="grid gap-2">
-              <Link href="/" className="apple-link rounded-2xl px-3 py-2" onClick={() => setMobileOpen(false)}>
-                Home
-              </Link>
-              <Link href="/library" className="apple-link rounded-2xl px-3 py-2" onClick={() => setMobileOpen(false)}>
-                Library
-              </Link>
-              <Link href="/genre" className="apple-link rounded-2xl px-3 py-2" onClick={() => setMobileOpen(false)}>
-                Genres
-              </Link>
-              {isAdmin && (
-                <Link href="/upload" className="apple-link rounded-2xl px-3 py-2" onClick={() => setMobileOpen(false)}>
-                  Upload
+              <div className="grid gap-2">
+                <Link href="/" className="apple-link rounded-2xl px-3 py-2" onClick={closeMobile}>
+                  Home
                 </Link>
-              )}
-              <ThemeToggle className="justify-center" />
+                <Link href="/library" className="apple-link rounded-2xl px-3 py-2" onClick={closeMobile}>
+                  Library
+                </Link>
+                <Link href="/genre" className="apple-link rounded-2xl px-3 py-2" onClick={closeMobile}>
+                  Genres
+                </Link>
+                {isAdmin && (
+                  <Link href="/upload" className="apple-link rounded-2xl px-3 py-2" onClick={closeMobile}>
+                    Upload
+                  </Link>
+                )}
+                <ThemeToggle className="justify-center" />
+              </div>
             </div>
-          </div>
+          </>
         )}
       </div>
     </nav>

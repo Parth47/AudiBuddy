@@ -10,11 +10,11 @@ import logging
 import time
 from collections.abc import Iterable
 
-from app.core.config import settings
 from app.core.database import db
 from app.services.tts_service import generate_chapter_audio, get_audio_duration_seconds, get_tts_stats
-from app.services.event_bus import event_bus, STEP_GENERATING, STEP_COMPLETE, STEP_IDLE
+from app.services.event_bus import event_bus, STEP_GENERATING
 from app.services.llm_chapter_service import get_llm_stats
+from app.services.translation_service import maybe_translate_for_tts
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +111,29 @@ async def get_audio_status_payload(book_id: str) -> dict:
 # ══════════════════════════════════════════════════════════════════════
 
 async def start_audio_generation(book_id: str, retry_failed: bool = False) -> dict:
-    """Start background generation for a book if work remains."""
+    """Start background generation for a book if work remains.
+
+    HARD RULE: Audio generation MUST NEVER proceed unless the book has been
+    through the chapter processing pipeline (status = 'ready') and chapters
+    exist in the database with text_content populated.
+    """
+    # ── Pipeline gate: verify book has been through chapter processing ──
+    books = await db.select("books", {"id": f"eq.{book_id}", "select": "id,status,total_chapters"})
+    if not books:
+        raise LookupError(f"Book {book_id} not found")
+
+    book = books[0]
+    if book["status"] not in ("ready",):
+        raise ValueError(
+            f"Audio generation blocked: book status is '{book['status']}'. "
+            "Chapters must be processed first (book status must be 'ready')."
+        )
+    if (book.get("total_chapters") or 0) == 0:
+        raise ValueError(
+            "Audio generation blocked: book has 0 chapters. "
+            "PDF must be processed into chapters before audio can be generated."
+        )
+
     current = await get_audio_status_payload(book_id)
 
     if _is_job_running(book_id):
@@ -209,6 +231,7 @@ async def generate_next_pending_chapter(book_id: str) -> dict:
     """Legacy one-step generation entry point used by older clients."""
     await _reset_stale_generating_chapters(book_id)
     chapter = await _next_pending_chapter(book_id)
+    tts_profile = await _resolve_book_tts_profile(book_id)
     if chapter is None:
         await _refresh_book_totals(book_id)
         status = await get_audio_status_payload(book_id)
@@ -218,7 +241,7 @@ async def generate_next_pending_chapter(book_id: str) -> dict:
             "status": status,
         }
 
-    result = await _generate_single_chapter(book_id, chapter)
+    result = await _generate_single_chapter(book_id, chapter, tts_profile)
     status = await get_audio_status_payload(book_id)
     result["status_snapshot"] = status
     return result
@@ -233,6 +256,7 @@ async def _run_generation_task(book_id: str) -> None:
     uses parallel chunk processing internally for speed)."""
     consecutive_errors = 0
     max_consecutive_errors = 3
+    tts_profile = await _resolve_book_tts_profile(book_id)
 
     # Notify SSE subscribers that audio generation has started
     event_bus.set_step(book_id, STEP_GENERATING, "Starting audio generation pipeline")
@@ -244,7 +268,7 @@ async def _run_generation_task(book_id: str) -> None:
                 logger.info("All chapters processed for book %s", book_id)
                 break
 
-            result = await _generate_single_chapter(book_id, chapter)
+            result = await _generate_single_chapter(book_id, chapter, tts_profile)
 
             # Broadcast updated API usage after each chapter
             _emit_api_usage(book_id)
@@ -298,11 +322,28 @@ async def _run_generation_task(book_id: str) -> None:
 # SINGLE CHAPTER GENERATION (now uses parallel chunk processing)
 # ══════════════════════════════════════════════════════════════════════
 
-async def _generate_single_chapter(book_id: str, chapter: dict) -> dict:
-    """Generate audio for one chapter using parallel TTS chunk processing."""
+async def _generate_single_chapter(
+    book_id: str,
+    chapter: dict,
+    tts_profile: dict[str, str | None] | None = None,
+) -> dict:
+    """Generate audio for one chapter using parallel TTS chunk processing.
+
+    HARD RULE: Only processes text from chapters that have been through the
+    LLM or regex chapter generation pipeline. The text_content field must be
+    populated from the chapters table — never from raw PDF extraction.
+    """
     chapter_id = chapter["id"]
     chapter_number = chapter["chapter_number"]
     text = (chapter.get("text_content") or "").strip()
+
+    # Verify this chapter has a title (evidence it came through chapter processing)
+    chapter_title = chapter.get("title", "")
+    if not chapter_title:
+        logger.warning(
+            "Chapter %s in book %s has no title — this may indicate raw text. Proceeding with caution.",
+            chapter_number, book_id,
+        )
 
     # Skip chapters with negligible text
     if len(text) < 10:
@@ -339,15 +380,32 @@ async def _generate_single_chapter(book_id: str, chapter: dict) -> dict:
             }
             event_bus.set_chunk_progress(book_id, completed, total)
 
+        source_language = (tts_profile or {}).get("source_language") or "en"
+        requested_target = (tts_profile or {}).get("translation_target_language")
+        translation_result = await maybe_translate_for_tts(
+            text=text,
+            source_language=source_language,
+            requested_target=requested_target,
+        )
+
         logger.info(
-            "Starting parallel TTS for chapter %s, book %s (%d chars)",
-            chapter_number, book_id, len(text),
+            (
+                "Starting parallel TTS for chapter %s, book %s "
+                "(chars=%d, detected_language=%s, translation_applied=%s, tts_language=%s)"
+            ),
+            chapter_number,
+            book_id,
+            len(text),
+            source_language,
+            translation_result.applied,
+            translation_result.tts_language,
         )
 
         # generate_chapter_audio handles chunking + parallel processing internally
         final_mp3 = await generate_chapter_audio(
-            text=text,
+            text=translation_result.text,
             on_chunk_complete=on_chunk_complete,
+            language=translation_result.tts_language,
         )
 
         if len(final_mp3) < 256:
@@ -458,6 +516,53 @@ async def _reset_stale_generating_chapters(book_id: str) -> None:
     )
     for chapter in stale:
         await db.update("chapters", {"status": "pending"}, {"id": chapter["id"]})
+
+
+async def _resolve_book_tts_profile(book_id: str) -> dict[str, str | None]:
+    """Resolve source + translation target language for chapter TTS."""
+    source_language = "en"
+    translation_target_language: str | None = None
+
+    try:
+        rows = await db.select(
+            "books",
+            {
+                "id": f"eq.{book_id}",
+                "select": "language,translation_target_language",
+                "limit": "1",
+            },
+        )
+        if rows:
+            source_language = (rows[0].get("language") or "en").strip().lower() or "en"
+            raw_target = rows[0].get("translation_target_language")
+            if raw_target is not None:
+                normalized = str(raw_target).strip().lower()
+                translation_target_language = normalized or None
+            return {
+                "source_language": source_language,
+                "translation_target_language": translation_target_language,
+            }
+    except Exception as exc:
+        logger.debug("Unable to resolve translation target for book %s: %s", book_id, exc)
+
+    try:
+        rows = await db.select(
+            "books",
+            {
+                "id": f"eq.{book_id}",
+                "select": "language",
+                "limit": "1",
+            },
+        )
+        if rows:
+            source_language = (rows[0].get("language") or "en").strip().lower() or "en"
+    except Exception as exc:
+        logger.debug("Unable to resolve language for book %s: %s", book_id, exc)
+
+    return {
+        "source_language": source_language,
+        "translation_target_language": None,
+    }
 
 
 async def _next_pending_chapter(book_id: str) -> dict | None:

@@ -10,6 +10,7 @@ class BookBase(BaseModel):
     description: str | None = None
     genre: str = "General"
     language: str = "en"
+    translation_target_language: str | None = None
 
 
 class BookCreate(BookBase):

@@ -13,10 +13,11 @@ CREATE TABLE books (
     cover_image_url TEXT,
     genre TEXT DEFAULT 'General',
     language TEXT DEFAULT 'en',
+    translation_target_language TEXT CHECK (translation_target_language IN ('en', 'hi', 'mr') OR translation_target_language IS NULL),
     total_chapters INTEGER DEFAULT 0,
     total_duration_seconds INTEGER DEFAULT 0,
     pdf_storage_path TEXT,          -- path in Supabase Storage
-    status TEXT DEFAULT 'processing' CHECK (status IN ('processing', 'ready', 'error')),
+    status TEXT DEFAULT 'processing' CHECK (status IN ('processing', 'ready', 'error', 'llm_failed')),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );

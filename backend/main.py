@@ -9,6 +9,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from app.core.config import settings
 from app.core.database import db
 from app.services.tts_service import close_tts_client
+from app.services.translation_service import close_translation_client
 from app.services.llm_chapter_service import close_llm_client
 from app.api.routes import books, chapters, audio, progress, recommendations
 
@@ -25,6 +26,7 @@ async def lifespan(app: FastAPI):
     logger.info("Audibuddy API shutting down — closing clients")
     await db.close()
     await close_tts_client()
+    await close_translation_client()
     await close_llm_client()
 
 

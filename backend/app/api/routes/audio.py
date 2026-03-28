@@ -3,9 +3,12 @@
 import asyncio
 import json
 import logging
+import os
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.database import db
@@ -16,8 +19,8 @@ from app.services.audio_generation import (
     start_audio_generation,
 )
 from app.services.event_bus import event_bus
-from app.services.tts_service import get_tts_stats, _elevenlabs_keys
-from app.services.llm_chapter_service import get_llm_stats, _gemini_keys
+from app.services.tts_service import get_tts_stats, _elevenlabs_keys, add_tts_key
+from app.services.llm_chapter_service import get_llm_stats, _gemini_keys, add_llm_key
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +39,17 @@ def require_admin():
 
 @router.post("/start/{book_id}", dependencies=[Depends(require_admin)])
 async def start_generation(book_id: str, retry_failed: bool = False):
-    """Start or resume background audio generation for a book."""
+    """Start or resume background audio generation for a book.
+
+    HARD RULE: This endpoint will REJECT requests if the book hasn't been
+    through chapter processing (status != 'ready' or 0 chapters).
+    """
     try:
         return await start_audio_generation(book_id, retry_failed=retry_failed)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/generate-next/{book_id}", dependencies=[Depends(require_admin)])
@@ -308,4 +317,122 @@ async def api_stats():
     return {
         "tts": get_tts_stats(),
         "llm": get_llm_stats(),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════
+# RUNTIME API KEY MANAGEMENT
+# ══════════════════════════════════════════════════════════════════════
+
+class AddKeyRequest(BaseModel):
+    """Request body for adding a new API key at runtime."""
+    provider: str        # "gemini", "openai", "anthropic", "elevenlabs", "openai-tts"
+    api_key: str         # The new key value
+    persist: bool = True # Whether to append to .env file
+
+
+# Map of provider names to their .env variable names
+_ENV_VAR_MAP = {
+    "gemini": "GOOGLE_GEMINI_API_KEYS",
+    "openai": "OPENAI_LLM_API_KEYS",
+    "anthropic": "ANTHROPIC_API_KEYS",
+    "elevenlabs": "ELEVENLABS_API_KEYS",
+    "openai-tts": "OPENAI_TTS_API_KEYS",
+}
+
+# LLM vs TTS providers
+_LLM_PROVIDERS = {"gemini", "openai", "anthropic"}
+_TTS_PROVIDERS = {"elevenlabs", "openai-tts"}
+
+
+def _persist_key_to_env(provider: str, api_key: str) -> bool:
+    """Append a new API key to the .env file for a given provider.
+
+    Updates the existing line by appending the key (comma-separated),
+    or adds a new line if the variable doesn't exist yet.
+    Returns True on success.
+    """
+    env_var = _ENV_VAR_MAP.get(provider)
+    if not env_var:
+        return False
+
+    env_path = Path(__file__).resolve().parents[3] / ".env"
+    if not env_path.exists():
+        logger.warning("No .env file found at %s — cannot persist key", env_path)
+        return False
+
+    try:
+        lines = env_path.read_text().splitlines()
+        found = False
+        new_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith(f"{env_var}="):
+                # Append the new key to the existing comma-separated list
+                current_value = stripped.split("=", 1)[1]
+                existing_keys = [k.strip() for k in current_value.split(",") if k.strip()]
+                if api_key.strip() not in existing_keys:
+                    existing_keys.append(api_key.strip())
+                new_lines.append(f"{env_var}={','.join(existing_keys)}")
+                found = True
+            else:
+                new_lines.append(line)
+
+        if not found:
+            new_lines.append(f"{env_var}={api_key.strip()}")
+
+        env_path.write_text("\n".join(new_lines) + "\n")
+        logger.info("Persisted new %s key to .env file", provider)
+        return True
+
+    except Exception as exc:
+        logger.error("Failed to persist key to .env: %s", exc)
+        return False
+
+
+@router.post("/add-api-key", dependencies=[Depends(require_admin)])
+async def add_api_key(req: AddKeyRequest):
+    """Add a new API key at runtime for a provider.
+
+    The key is immediately available for use. If persist=True (default),
+    it is also appended to the .env file for future restarts.
+
+    Supported providers: gemini, openai, anthropic, elevenlabs, openai-tts
+    """
+    provider = req.provider.lower().strip()
+    api_key = req.api_key.strip()
+
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API key cannot be empty.")
+
+    if provider not in _ENV_VAR_MAP:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown provider '{provider}'. Supported: {', '.join(_ENV_VAR_MAP.keys())}",
+        )
+
+    # Add to the in-memory key manager
+    added = False
+    if provider in _LLM_PROVIDERS:
+        added = add_llm_key(provider, api_key)
+    elif provider in _TTS_PROVIDERS:
+        added = add_tts_key(provider, api_key)
+
+    if not added:
+        raise HTTPException(
+            status_code=409,
+            detail="Key already exists or could not be added (duplicate).",
+        )
+
+    # Persist to .env file if requested
+    persisted = False
+    if req.persist:
+        persisted = _persist_key_to_env(provider, api_key)
+
+    return {
+        "success": True,
+        "provider": provider,
+        "added_to_runtime": True,
+        "persisted_to_env": persisted,
+        "message": f"New {provider} API key added successfully.",
     }

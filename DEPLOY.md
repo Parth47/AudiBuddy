@@ -102,3 +102,9 @@ AudiBuddy/
 - **Render free tier spins down after 15 minutes of inactivity.** The first request after idle will take ~30 seconds. This is normal for the free tier. Upgrade to a paid plan ($7/mo) to keep it always on.
 - **Supabase audio files are served directly from Supabase Storage CDN**, so audio playback is fast regardless of Render's state.
 - **No code changes are needed between local and deployed versions.** The only difference is the `ADMIN_MODE` environment variable.
+
+## Upload Error Fix (400 on `/rest/v1/books?id=eq...`)
+
+If PDF upload fails with a `400 Bad Request` from Supabase when processing fails, your `books.status` constraint is likely missing `llm_failed`.
+
+Run `supabase/migrate_allow_llm_failed_status.sql` once in the Supabase SQL editor.

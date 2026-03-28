@@ -33,8 +33,11 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# HTTP status codes that indicate rate-limit or quota exhaustion
-RATE_LIMIT_CODES = {429, 402, 403}
+# HTTP status codes that indicate rate-limit or quota exhaustion.
+# 403 is intentionally excluded — it means "permission denied" (invalid key,
+# API not enabled, region blocked), not quota.  A 403 key should NOT be
+# cooled-down — it will never start working after a timeout.
+RATE_LIMIT_CODES = {429, 402}
 
 # How long (seconds) to cool-down a key before re-trying it
 KEY_COOLDOWN_SECONDS = 60
@@ -101,6 +104,17 @@ class APIKeyManager:
     @property
     def has_keys(self) -> bool:
         return len(self.keys) > 0
+
+    def add_key(self, key: str) -> bool:
+        """Add a new API key at runtime. Returns False if duplicate or empty."""
+        key = key.strip()
+        if not key or key in self._states:
+            return False
+        self.keys.append(key)
+        self._states[key] = _KeyState(key=key)
+        logger.info("[%s] New API key added at runtime (...%s). Total keys: %d",
+                     self.service_name, key[-6:], len(self.keys))
+        return True
 
     @property
     def total_chars_used(self) -> int:

@@ -8,7 +8,18 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from app.core.config import settings
 from app.core.database import db
 from app.services.audio_generation import cancel_audio_generation
-from app.services.pdf_service import process_pdf, LLMProcessingError
+from app.services.pdf_service import (
+    process_pdf,
+    LLMProcessingError,
+    PDFExtractionError,
+    detect_language_from_chapters,
+    normalize_language_code,
+)
+from app.services.translation_service import (
+    normalize_translation_target,
+    resolve_translation_target,
+)
+from app.services.llm_chapter_service import LLMQuotaExhaustedError
 from app.schemas.book import BookResponse, BookListResponse
 
 router = APIRouter(prefix="/books", tags=["books"])
@@ -48,6 +59,41 @@ async def _cleanup_storage_assets(files_to_delete: list[tuple[str, str]]) -> Non
             logger.warning("Failed to delete storage assets from %s: %s", bucket, exc)
 
 
+async def _mark_llm_failed_status(book_id: str) -> None:
+    """Mark a book as llm_failed, with a fallback for older DB constraints."""
+    try:
+        await db.update("books", {"status": "llm_failed"}, {"id": book_id})
+    except Exception as exc:
+        logger.warning(
+            "Failed to set status=llm_failed for book %s. Falling back to status=error. Error: %s",
+            book_id,
+            exc,
+        )
+        try:
+            await db.update("books", {"status": "error"}, {"id": book_id})
+        except Exception as fallback_exc:
+            logger.warning(
+                "Failed to set fallback status=error for book %s: %s",
+                book_id,
+                fallback_exc,
+            )
+
+
+async def _update_book_with_optional_translation_fields(book_id: str, data: dict) -> list[dict]:
+    """Update book metadata with backward compatibility for older schemas."""
+    try:
+        return await db.update("books", data, {"id": book_id})
+    except Exception as exc:
+        if "translation_target_language" in data:
+            logger.warning(
+                "books.translation_target_language not available, retrying update without it: %s",
+                exc,
+            )
+            fallback_data = {k: v for k, v in data.items() if k != "translation_target_language"}
+            return await db.update("books", fallback_data, {"id": book_id})
+        raise
+
+
 @router.post("/upload", response_model=BookResponse, dependencies=[Depends(require_admin)])
 async def upload_book(
     file: UploadFile = File(...),
@@ -57,26 +103,64 @@ async def upload_book(
     description: str = Form(""),
     cover_image: UploadFile | None = File(None),
     use_fallback: bool = Form(False),
+    language: str = Form("auto"),
+    translation_target: str = Form("auto"),
 ):
     """
     Upload a PDF and process it into chapters.
     Optionally upload a cover image.
     If use_fallback is True, skips LLM and uses regex-based chapter detection.
     """
+    selected_language = normalize_language_code(language)
+    if selected_language not in {"auto", "en", "hi", "mr", "mixed"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid language. Use one of: auto, en, hi, mr, mixed.",
+        )
+    raw_translation_target = (translation_target or "").strip().lower()
+    allowed_targets = {
+        "auto",
+        "automatic",
+        "none",
+        "off",
+        "original",
+        "source",
+        "en",
+        "english",
+        "hi",
+        "hindi",
+        "mr",
+        "marathi",
+    }
+    if raw_translation_target not in allowed_targets:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid translation_target. Use one of: auto, none, en, hi, mr.",
+        )
+    selected_translation_target = normalize_translation_target(translation_target)
+
     # Validate file type
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
 
-    # Read the file
+    # Read the file with size validation
     pdf_bytes = await file.read()
     if len(pdf_bytes) == 0:
         raise HTTPException(status_code=400, detail="File is empty")
+
+    max_size = 200 * 1024 * 1024  # 200 MB
+    if len(pdf_bytes) > max_size:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File is too large ({len(pdf_bytes) / (1024 * 1024):.1f} MB). Maximum is 200 MB.",
+        )
 
     # 1. Create book record (status = processing)
     book_data = {
         "title": title,
         "author": author,
         "genre": genre,
+        "language": selected_language if selected_language != "auto" else "en",
         "description": description or f"Audiobook of {title} by {author}",
         "status": "processing",
     }
@@ -107,9 +191,38 @@ async def upload_book(
         # 4. Extract text and detect chapters
         try:
             chapters = await process_pdf(pdf_bytes, use_fallback=use_fallback)
+        except PDFExtractionError as pdf_err:
+            # PDF-level failure (corrupted, encrypted, empty, no text)
+            await db.update("books", {"status": "error"}, {"id": book_id})
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "pdf_extraction_failed",
+                    "message": str(pdf_err),
+                    "book_id": book_id,
+                    "can_retry_with_fallback": False,
+                },
+            )
         except LLMProcessingError as llm_err:
-            # LLM failed — return special status so frontend can offer fallback
-            await db.update("books", {"status": "llm_failed"}, {"id": book_id})
+            # Check if the inner cause is a quota exhaustion
+            inner = llm_err.__cause__
+            if isinstance(inner, LLMQuotaExhaustedError):
+                await _mark_llm_failed_status(book_id)
+                # Distinguish auth errors (403) from real quota errors (429/402)
+                is_auth_error = inner.status_code == 403
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "llm_auth_failed" if is_auth_error else "llm_quota_exhausted",
+                        "message": str(inner),
+                        "book_id": book_id,
+                        "can_retry_with_fallback": True,
+                        "can_provide_new_key": True,
+                        "exhausted_provider": inner.provider,
+                    },
+                )
+            # Regular LLM failure — return special status so frontend can offer fallback
+            await _mark_llm_failed_status(book_id)
             raise HTTPException(
                 status_code=422,
                 detail={
@@ -117,8 +230,26 @@ async def upload_book(
                     "message": f"LLM processing failed: {llm_err}. Do you want to use the fallback mechanism?",
                     "book_id": book_id,
                     "can_retry_with_fallback": True,
+                    "can_provide_new_key": False,
                 },
             )
+
+        resolved_language = (
+            selected_language
+            if selected_language != "auto"
+            else detect_language_from_chapters(chapters)
+        )
+        resolved_translation_target = resolve_translation_target(
+            resolved_language,
+            selected_translation_target,
+        )
+        logger.info(
+            "Book %s language pipeline: detected_language=%s, requested_translation=%s, resolved_translation=%s",
+            book_id,
+            resolved_language,
+            selected_translation_target,
+            resolved_translation_target or "none",
+        )
 
         # 5. Store chapters in DB
         for i, chapter in enumerate(chapters):
@@ -132,10 +263,15 @@ async def upload_book(
             await db.insert("chapters", chapter_data)
 
         # 6. Update book status and chapter count
-        update_data = {"status": "ready", "total_chapters": len(chapters)}
+        update_data = {
+            "status": "ready",
+            "total_chapters": len(chapters),
+            "language": resolved_language,
+            "translation_target_language": resolved_translation_target,
+        }
         if cover_image_url:
             update_data["cover_image_url"] = cover_image_url
-        updated = await db.update("books", update_data, {"id": book_id})
+        updated = await _update_book_with_optional_translation_fields(book_id, update_data)
         return updated[0]
 
     except HTTPException:
@@ -183,10 +319,21 @@ async def retry_with_fallback(book_id: str):
             }
             await db.insert("chapters", chapter_data)
 
-        updated = await db.update(
-            "books",
-            {"status": "ready", "total_chapters": len(chapters)},
-            {"id": book_id},
+        detected_language = detect_language_from_chapters(chapters)
+        requested_translation = normalize_translation_target(book.get("translation_target_language") or "none")
+        resolved_translation_target = resolve_translation_target(
+            detected_language,
+            requested_translation,
+        )
+
+        updated = await _update_book_with_optional_translation_fields(
+            book_id,
+            {
+                "status": "ready",
+                "total_chapters": len(chapters),
+                "language": detected_language,
+                "translation_target_language": resolved_translation_target,
+            },
         )
         return updated[0]
 

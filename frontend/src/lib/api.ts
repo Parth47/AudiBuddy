@@ -12,22 +12,29 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 
 // Default timeout for API calls (10s is plenty for DB queries; audio gen uses its own)
 const DEFAULT_TIMEOUT_MS = 10_000;
+const UPLOAD_TIMEOUT_MS = 300_000;
+const FALLBACK_TIMEOUT_MS = 300_000;
+
+type APIRequestOptions = RequestInit & {
+  timeoutMs?: number;
+};
 
 async function fetchAPI<T>(
   endpoint: string,
-  options?: RequestInit
+  options?: APIRequestOptions
 ): Promise<T> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, ...fetchOptions } = options ?? {};
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const res = await fetch(`${API_URL}${endpoint}`, {
-      ...options,
-      signal: options?.signal ?? controller.signal,
+      ...fetchOptions,
+      signal: fetchOptions.signal ?? controller.signal,
       headers: {
         "Content-Type": "application/json",
         "Accept-Encoding": "gzip",
-        ...options?.headers,
+        ...fetchOptions.headers,
       },
     });
     if (!res.ok) {
@@ -35,6 +42,11 @@ async function fetchAPI<T>(
       throw new Error(error.detail || "API request failed");
     }
     return res.json();
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`Request timed out after ${Math.ceil(timeoutMs / 1000)} seconds.`);
+    }
+    throw error;
   } finally {
     clearTimeout(timeoutId);
   }
@@ -59,6 +71,7 @@ export interface Book {
   cover_image_url: string | null;
   genre: string;
   language: string;
+  translation_target_language?: string | null;
   total_chapters: number;
   total_duration_seconds: number;
   status: string;
@@ -349,6 +362,13 @@ export interface LLMFailureError {
   can_retry_with_fallback: boolean;
 }
 
+export interface QuotaFailureError {
+  error: "llm_quota_exhausted" | "llm_auth_failed";
+  message: string;
+  book_id: string;
+  can_retry_with_fallback: boolean;
+}
+
 export class UploadLLMError extends Error {
   public data: LLMFailureError;
   constructor(data: LLMFailureError) {
@@ -358,9 +378,26 @@ export class UploadLLMError extends Error {
   }
 }
 
+export class UploadQuotaError extends Error {
+  public data: QuotaFailureError & {
+    can_provide_new_key: boolean;
+    exhausted_provider: string;
+  };
+  constructor(
+    data: QuotaFailureError & {
+      can_provide_new_key: boolean;
+      exhausted_provider: string;
+    }
+  ) {
+    super(data.message);
+    this.name = "UploadQuotaError";
+    this.data = data;
+  }
+}
+
 export async function uploadBook(formData: FormData): Promise<Book> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 120_000);
+  const timeoutId = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
 
   try {
     const res = await fetch(`${API_URL}/api/books/upload`, {
@@ -370,6 +407,14 @@ export async function uploadBook(formData: FormData): Promise<Book> {
     });
     if (!res.ok) {
       const error = await res.json().catch(() => ({ detail: res.statusText }));
+      // Check for quota exhaustion or auth failure response (422)
+      if (
+        res.status === 422 &&
+        (error?.detail?.error === "llm_quota_exhausted" ||
+          error?.detail?.error === "llm_auth_failed")
+      ) {
+        throw new UploadQuotaError(error.detail);
+      }
       // Check for LLM failure response (422)
       if (res.status === 422 && error?.detail?.error === "llm_processing_failed") {
         throw new UploadLLMError(error.detail);
@@ -377,13 +422,21 @@ export async function uploadBook(formData: FormData): Promise<Book> {
       throw new Error(typeof error.detail === "string" ? error.detail : "Upload failed");
     }
     return res.json();
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`Upload timed out after ${Math.ceil(UPLOAD_TIMEOUT_MS / 1000)} seconds.`);
+    }
+    throw error;
   } finally {
     clearTimeout(timeoutId);
   }
 }
 
 export async function retryWithFallback(bookId: string): Promise<Book> {
-  return fetchAPI(`/api/books/retry-fallback/${bookId}`, { method: "POST" });
+  return fetchAPI(`/api/books/retry-fallback/${bookId}`, {
+    method: "POST",
+    timeoutMs: FALLBACK_TIMEOUT_MS,
+  });
 }
 
 // --- Chapter APIs ---
@@ -447,6 +500,17 @@ export async function getAudioStream(bookId: string, chapterNumber: number): Pro
 
 export async function getQuotaCheck(bookId: string): Promise<QuotaCheck> {
   return fetchAPI(`/api/audio/quota-check/${bookId}`);
+}
+
+export async function addApiKey(
+  provider: string,
+  apiKey: string,
+  persist = true
+): Promise<{ success: boolean; message: string }> {
+  return fetchAPI("/api/audio/add-api-key", {
+    method: "POST",
+    body: JSON.stringify({ provider, api_key: apiKey, persist }),
+  });
 }
 
 // --- Discovery APIs ---
