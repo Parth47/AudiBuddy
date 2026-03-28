@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, type CSSProperties } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 
 import { Book } from "@/lib/api";
@@ -35,7 +35,7 @@ export default function BookRow({ title, books, onBookDeleted }: BookRowProps) {
         <button
           type="button"
           onClick={() => scroll("left")}
-          className="absolute left-0 top-[36%] z-10 hidden size-11 -translate-y-1/2 items-center justify-center rounded-full border border-border/70 bg-card/85 text-foreground backdrop-blur-xl opacity-0 shadow-sm transition-all duration-200 group-hover/row:opacity-100 hover:bg-card active:scale-95 lg:flex"
+          className="motion-interactive absolute left-0 top-[36%] z-10 hidden size-11 -translate-y-1/2 items-center justify-center rounded-full border border-border/70 bg-card/85 text-foreground backdrop-blur-xl opacity-0 shadow-sm group-hover/row:opacity-100 hover:bg-card lg:flex"
           aria-label={`Scroll ${title} left`}
         >
           <ChevronLeft className="size-5" />
@@ -46,8 +46,12 @@ export default function BookRow({ title, books, onBookDeleted }: BookRowProps) {
           className="scrollbar-hide flex gap-3 overflow-x-auto pb-4 sm:gap-5"
           style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
         >
-          {books.map((book) => (
-            <div key={book.id} className="w-[160px] shrink-0 sm:w-[208px]">
+          {books.map((book, index) => (
+            <div
+              key={book.id}
+              className="stagger-item w-[160px] shrink-0 sm:w-[208px]"
+              style={{ "--stagger-index": index } as CSSProperties}
+            >
               <BookCard book={book} onDeleted={onBookDeleted} />
             </div>
           ))}
@@ -56,7 +60,7 @@ export default function BookRow({ title, books, onBookDeleted }: BookRowProps) {
         <button
           type="button"
           onClick={() => scroll("right")}
-          className="absolute right-0 top-[36%] z-10 hidden size-11 -translate-y-1/2 items-center justify-center rounded-full border border-border/70 bg-card/85 text-foreground backdrop-blur-xl opacity-0 shadow-sm transition-all duration-200 group-hover/row:opacity-100 hover:bg-card active:scale-95 lg:flex"
+          className="motion-interactive absolute right-0 top-[36%] z-10 hidden size-11 -translate-y-1/2 items-center justify-center rounded-full border border-border/70 bg-card/85 text-foreground backdrop-blur-xl opacity-0 shadow-sm group-hover/row:opacity-100 hover:bg-card lg:flex"
           aria-label={`Scroll ${title} right`}
         >
           <ChevronRight className="size-5" />

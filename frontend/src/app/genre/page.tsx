@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
 
@@ -56,11 +56,12 @@ export default function GenrePage() {
         </div>
       ) : genres.length > 0 ? (
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          {genres.map((genre) => (
+          {genres.map((genre, index) => (
             <Link
               key={genre}
               href={`/search?q=${encodeURIComponent(genre)}`}
-              className="group relative overflow-hidden rounded-[2rem] border border-border/70 p-6 shadow-[var(--shadow-panel)] transition-all duration-200 hover:-translate-y-1"
+              className="motion-interactive stagger-item group relative overflow-hidden rounded-[2rem] border border-border/70 p-6 shadow-[var(--shadow-panel)] hover:-translate-y-1"
+              style={{ "--stagger-index": index } as CSSProperties}
             >
               <div className={`absolute inset-0 bg-gradient-to-br ${getTone(genre)}`} />
               <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.55),transparent_38%)] dark:bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.08),transparent_38%)]" />

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import Link from "next/link";
 
 import BookRow from "@/components/books/book-row";
@@ -135,10 +135,16 @@ export default function HomePage() {
           </div>
         </div>
 
-        {hasLibrary && <BookRow title="Recently Added" books={recent} />}
+        {hasLibrary && (
+          <div className="stagger-item" style={{ "--stagger-index": 0 } as CSSProperties}>
+            <BookRow title="Recently Added" books={recent} />
+          </div>
+        )}
 
-        {genreRows.map(({ genre, books }) => (
-          <BookRow key={genre} title={genre} books={books} />
+        {genreRows.map(({ genre, books }, index) => (
+          <div key={genre} className="stagger-item" style={{ "--stagger-index": index + 1 } as CSSProperties}>
+            <BookRow title={genre} books={books} />
+          </div>
         ))}
 
         {loadError && (

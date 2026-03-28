@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useState, type CSSProperties } from "react";
 import { useSearchParams } from "next/navigation";
 import { Search as SearchIcon } from "lucide-react";
 
@@ -73,14 +73,19 @@ function SearchContent() {
               {results.length} result{results.length !== 1 ? "s" : ""}
             </p>
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-              {results.map((book) => (
-                <BookCard
+              {results.map((book, index) => (
+                <div
                   key={book.id}
-                  book={book}
-                  onDeleted={(deletedBookId) => {
-                    setResults((current) => current.filter((item) => item.id !== deletedBookId));
-                  }}
-                />
+                  className="stagger-item"
+                  style={{ "--stagger-index": index } as CSSProperties}
+                >
+                  <BookCard
+                    book={book}
+                    onDeleted={(deletedBookId) => {
+                      setResults((current) => current.filter((item) => item.id !== deletedBookId));
+                    }}
+                  />
+                </div>
               ))}
             </div>
           </>

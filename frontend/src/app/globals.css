@@ -90,6 +90,12 @@
   --shadow-hero: 0 80px 180px -100px rgba(15, 23, 42, 0.34);
   --hero-gradient: linear-gradient(140deg, rgba(255, 255, 255, 0.94) 0%, rgba(248, 250, 252, 0.85) 46%, rgba(233, 238, 245, 0.92) 100%);
   --hero-pattern: radial-gradient(circle at 12% 18%, rgba(255, 255, 255, 0.95), transparent 32%), radial-gradient(circle at 84% 12%, rgba(226, 232, 240, 0.85), transparent 30%), linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0));
+  --motion-ease-fluid: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-ease-snappy: cubic-bezier(0.2, 0.9, 0.25, 1);
+  --motion-duration-instant: 90ms;
+  --motion-duration-fast: 170ms;
+  --motion-duration-medium: 560ms;
+  --motion-stagger-step: 55ms;
 }
 
 .dark {
@@ -218,20 +224,26 @@
     box-shadow: var(--shadow-panel);
   }
 
+  .motion-interactive,
   .interactive-surface {
-    @apply transition-transform duration-200 ease-out;
+    transition-property: transform, box-shadow, background-color, border-color, color, opacity, filter;
+    transition-duration: var(--motion-duration-fast);
+    transition-timing-function: var(--motion-ease-snappy);
+    transition-delay: 0ms;
     transform-origin: center;
     will-change: transform;
+    transform: translateZ(0);
+  }
+
+  .motion-interactive:active,
+  .interactive-surface:active {
+    transition-duration: var(--motion-duration-instant);
+    transform: translate3d(0, 1px, 0) scale(0.975);
   }
 
   .interactive-surface:hover {
-    transform: translateY(-4px);
+    transform: translate3d(0, -4px, 0);
     box-shadow: var(--shadow-lift);
-  }
-
-  .interactive-surface:active {
-    transform: translateY(-1px) scale(0.99);
-    transition-duration: 80ms;
   }
 
   .hero-panel {
@@ -256,26 +268,64 @@
 
   .theme-toggle-button {
     @apply h-10 rounded-full border-border/80 bg-background/70 px-4 text-sm font-medium text-foreground shadow-none hover:bg-background/90;
+    transition: transform var(--motion-duration-fast) var(--motion-ease-snappy), background-color var(--motion-duration-fast) var(--motion-ease-snappy), border-color var(--motion-duration-fast) var(--motion-ease-snappy), color var(--motion-duration-fast) var(--motion-ease-snappy);
+  }
+
+  .theme-toggle-button:hover {
+    transform: translate3d(0, -1px, 0);
+  }
+
+  .theme-toggle-button:active {
+    transform: translate3d(0, 1px, 0) scale(0.98);
+    transition-duration: var(--motion-duration-instant);
   }
 
   .apple-link {
-    @apply text-sm font-medium text-muted-foreground transition-colors duration-150 hover:text-foreground;
+    @apply text-sm font-medium text-muted-foreground hover:text-foreground;
+    transition: transform var(--motion-duration-fast) var(--motion-ease-snappy), color var(--motion-duration-fast) var(--motion-ease-snappy), opacity var(--motion-duration-fast) var(--motion-ease-snappy);
+  }
+
+  .apple-link:hover {
+    transform: translate3d(0, -1px, 0);
+  }
+
+  .apple-link:active {
+    transform: translate3d(0, 1px, 0) scale(0.98);
+    transition-duration: var(--motion-duration-instant);
   }
 
   .apple-input {
     @apply h-11 rounded-full border-border/80 bg-background/65 px-4 text-foreground placeholder:text-muted-foreground;
+    transition: border-color var(--motion-duration-fast) var(--motion-ease-snappy), background-color var(--motion-duration-fast) var(--motion-ease-snappy), box-shadow var(--motion-duration-fast) var(--motion-ease-snappy);
   }
 
   .apple-field {
-    @apply rounded-[1.5rem] border border-border/80 bg-background/55 px-4 py-3 text-foreground shadow-none transition-colors duration-150 placeholder:text-muted-foreground focus:border-foreground/20 focus:outline-none;
+    @apply rounded-[1.5rem] border border-border/80 bg-background/55 px-4 py-3 text-foreground shadow-none placeholder:text-muted-foreground focus:border-foreground/20 focus:outline-none;
+    transition: transform var(--motion-duration-fast) var(--motion-ease-snappy), border-color var(--motion-duration-fast) var(--motion-ease-snappy), background-color var(--motion-duration-fast) var(--motion-ease-snappy), box-shadow var(--motion-duration-fast) var(--motion-ease-snappy);
+  }
+
+  .apple-field:focus-visible {
+    transform: translate3d(0, -1px, 0);
   }
 
   .apple-drop-zone {
-    @apply rounded-[2rem] border border-dashed border-border/80 bg-card/45 transition-all duration-200 hover:border-foreground/20 hover:bg-card/70;
+    @apply rounded-[2rem] border border-dashed border-border/80 bg-card/45 hover:border-foreground/20 hover:bg-card/70;
+    transition: transform var(--motion-duration-fast) var(--motion-ease-snappy), border-color var(--motion-duration-fast) var(--motion-ease-snappy), background-color var(--motion-duration-fast) var(--motion-ease-snappy), box-shadow var(--motion-duration-fast) var(--motion-ease-snappy);
+  }
+
+  .apple-drop-zone:hover {
+    transform: translate3d(0, -2px, 0);
   }
 
   .apple-pill {
     @apply inline-flex items-center rounded-full border border-border/70 bg-background/60 px-4 py-2 text-xs font-medium tracking-[0.2em] uppercase text-muted-foreground;
+  }
+
+  .stagger-item {
+    opacity: 0;
+    animation: staggerReveal var(--motion-duration-medium) var(--motion-ease-fluid) both;
+    animation-delay: calc(var(--stagger-index, 0) * var(--motion-stagger-step));
+    will-change: transform, opacity;
   }
 }
 
@@ -348,16 +398,28 @@ html.theme-transitioning *::after {
 @keyframes fadeInUp {
   from {
     opacity: 0;
-    transform: translateY(24px);
+    transform: translate3d(0, 24px, 0) scale(0.988);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translate3d(0, 0, 0) scale(1);
   }
 }
 
 .animate-fade-in-up {
-  animation: fadeInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: fadeInUp var(--motion-duration-medium) var(--motion-ease-fluid) both;
+  will-change: transform, opacity;
+}
+
+@keyframes staggerReveal {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 20px, 0) scale(0.986);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
 }
 
 @keyframes float {
@@ -377,8 +439,22 @@ html.theme-transitioning *::after {
 
 @media (prefers-reduced-motion: reduce) {
   .animate-fade-in-up,
+  .stagger-item,
   .animate-float,
   .animate-shimmer {
     animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  .motion-interactive,
+  .interactive-surface,
+  .theme-toggle-button,
+  .apple-link,
+  .apple-input,
+  .apple-field,
+  .apple-drop-zone {
+    transition-duration: 0ms !important;
+    transform: none !important;
   }
 }

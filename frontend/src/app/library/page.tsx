@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { BookOpen, Library as LibraryIcon } from "lucide-react";
 
@@ -136,8 +136,12 @@ export default function LibraryPage() {
         </div>
       )}
 
-      {genreGroups.map((group) => (
-        <section key={group.genre} className="space-y-4 animate-fade-in-up">
+      {genreGroups.map((group, groupIndex) => (
+        <section
+          key={group.genre}
+          className="stagger-item space-y-4"
+          style={{ "--stagger-index": groupIndex } as CSSProperties}
+        >
           <div className="flex items-center gap-3">
             <h2 className="text-xl font-semibold tracking-tight text-foreground">{group.genre}</h2>
             <span className="rounded-full border border-border/70 bg-card/50 px-2.5 py-0.5 text-xs text-muted-foreground">
@@ -148,8 +152,12 @@ export default function LibraryPage() {
           <div className="relative">
             {/* Bookshelf visual */}
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-              {group.books.map((book) => (
-                <div key={book.id} className="w-full">
+              {group.books.map((book, index) => (
+                <div
+                  key={book.id}
+                  className="stagger-item w-full"
+                  style={{ "--stagger-index": index } as CSSProperties}
+                >
                   <BookCard book={book} onDeleted={handleBookDeleted} />
                 </div>
               ))}
