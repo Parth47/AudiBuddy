@@ -55,11 +55,16 @@ export default function AudioPlayer({
   const currentChapterData = chapters.find((chapter) => chapter.chapter_number === currentChapter);
 
   const loadChapter = useCallback(
-    async (chapterNumber: number, startAt?: number) => {
+    async (chapterNumber: number, startAt?: number, autoPlay = false) => {
       setLoading(true);
       setError(null);
 
       try {
+        const existingAudio = audioRef.current;
+        if (existingAudio) {
+          existingAudio.pause();
+        }
+
         const info = await getAudioStream(bookId, chapterNumber);
         setAudioUrl(info.audio_url);
         setCurrentChapter(chapterNumber);
@@ -67,10 +72,16 @@ export default function AudioPlayer({
         window.setTimeout(() => {
           const audio = audioRef.current;
           if (!audio) return;
-          if (startAt && startAt > 0) audio.currentTime = startAt;
+          const seekTime = startAt && startAt > 0 ? startAt : 0;
+          audio.currentTime = seekTime;
           audio.playbackRate = playbackSpeed;
-          audio.play().catch(() => {});
-          setIsPlaying(true);
+          setCurrentTime(seekTime);
+
+          if (autoPlay) {
+            audio.play().catch(() => {});
+          } else {
+            setIsPlaying(false);
+          }
         }, 300);
       } catch {
         setError("Audio is not available for this chapter yet.");
@@ -108,7 +119,6 @@ export default function AudioPlayer({
     } else {
       audio.play().catch(() => {});
     }
-    setIsPlaying((playing) => !playing);
   };
 
   const seek = (value: number | readonly number[]) => {
@@ -134,14 +144,14 @@ export default function AudioPlayer({
   const nextChapter = () => {
     const index = readyChapters.findIndex((chapter) => chapter.chapter_number === currentChapter);
     if (index < readyChapters.length - 1) {
-      void loadChapter(readyChapters[index + 1].chapter_number);
+      void loadChapter(readyChapters[index + 1].chapter_number, undefined, isPlaying);
     }
   };
 
   const prevChapter = () => {
     const index = readyChapters.findIndex((chapter) => chapter.chapter_number === currentChapter);
     if (index > 0) {
-      void loadChapter(readyChapters[index - 1].chapter_number);
+      void loadChapter(readyChapters[index - 1].chapter_number, undefined, isPlaying);
     }
   };
 
