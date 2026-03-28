@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, BookOpen, Heart } from "lucide-react";
 import Link from "next/link";
 
@@ -24,9 +24,11 @@ function formatDuration(seconds: number): string {
 
 export default function BookDetailPage() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const router = useRouter();
   const { isAdmin } = useAdmin();
   const bookId = params.id as string;
+  const shouldAutoplay = searchParams.get("autoplay") === "1";
 
   const [book, setBook] = useState<Book | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
@@ -277,7 +279,9 @@ export default function BookDetailPage() {
           />
         )}
 
-        {!showProgressTracker && hasAudio && <AudioPlayer bookId={bookId} chapters={chapters} />}
+        {!showProgressTracker && hasAudio && (
+          <AudioPlayer bookId={bookId} chapters={chapters} autoPlayOnLoad={shouldAutoplay} />
+        )}
 
         {!showProgressTracker && !hasAudio && totalChapterCount > 0 && (
           <div className="surface-card rounded-[2rem] p-6 text-center sm:p-8">

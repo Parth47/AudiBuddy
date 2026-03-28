@@ -22,6 +22,7 @@ interface AudioPlayerProps {
   chapters: Chapter[];
   initialChapter?: number;
   initialTime?: number;
+  autoPlayOnLoad?: boolean;
 }
 
 const PLAYBACK_SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as const;
@@ -38,8 +39,13 @@ export default function AudioPlayer({
   chapters,
   initialChapter = 1,
   initialTime = 0,
+  autoPlayOnLoad = false,
 }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const mediaSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
+
   const [currentChapter, setCurrentChapter] = useState(initialChapter);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -50,9 +56,65 @@ export default function AudioPlayer({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1);
+  const [volumeHint, setVolumeHint] = useState<string | null>(null);
 
   const readyChapters = chapters.filter((chapter) => chapter.status === "ready");
   const currentChapterData = chapters.find((chapter) => chapter.chapter_number === currentChapter);
+
+  const applyVolume = useCallback((nextMuted: boolean, nextVolume: number) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const normalized = Math.max(0, Math.min(1, nextVolume / 100));
+    const level = nextMuted ? 0 : normalized;
+
+    audio.muted = nextMuted;
+    audio.volume = level;
+
+    if (gainNodeRef.current) {
+      gainNodeRef.current.gain.value = level;
+    }
+  }, []);
+
+  const ensureWebAudioVolumeControl = useCallback(async (): Promise<boolean> => {
+    if (typeof window === "undefined") return false;
+    const audio = audioRef.current;
+    if (!audio) return false;
+
+    const AudioContextCtor =
+      (window as unknown as { AudioContext?: typeof AudioContext }).AudioContext ??
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) return false;
+
+    try {
+      if (!audioContextRef.current) {
+        audioContextRef.current = new AudioContextCtor();
+      }
+      const context = audioContextRef.current;
+
+      if (!gainNodeRef.current) {
+        gainNodeRef.current = context.createGain();
+        gainNodeRef.current.connect(context.destination);
+      }
+
+      if (!mediaSourceRef.current) {
+        mediaSourceRef.current = context.createMediaElementSource(audio);
+        mediaSourceRef.current.connect(gainNodeRef.current);
+      }
+
+      if (context.state === "suspended") {
+        await context.resume();
+      }
+
+      setVolumeHint(null);
+      return true;
+    } catch {
+      if (/iPad|iPhone|iPod/i.test(window.navigator.userAgent)) {
+        setVolumeHint("iOS may limit in-app volume. Use device volume buttons for full control.");
+      }
+      return false;
+    }
+  }, []);
 
   const loadChapter = useCallback(
     async (chapterNumber: number, startAt?: number, autoPlay = false) => {
@@ -76,9 +138,12 @@ export default function AudioPlayer({
           audio.currentTime = seekTime;
           audio.playbackRate = playbackSpeed;
           setCurrentTime(seekTime);
+          applyVolume(muted, volume);
 
           if (autoPlay) {
-            audio.play().catch(() => {});
+            audio.play().catch(() => {
+              setIsPlaying(false);
+            });
           } else {
             setIsPlaying(false);
           }
@@ -89,35 +154,45 @@ export default function AudioPlayer({
         setLoading(false);
       }
     },
-    [bookId, playbackSpeed]
+    [applyVolume, bookId, muted, playbackSpeed, volume]
   );
 
   useEffect(() => {
     if (readyChapters.length === 0) return;
     const selected = readyChapters.find((chapter) => chapter.chapter_number === initialChapter);
     const startChapter = selected ? initialChapter : readyChapters[0].chapter_number;
-    void loadChapter(startChapter, initialTime);
+    void loadChapter(startChapter, initialTime, autoPlayOnLoad);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!audioRef.current) return;
-    audioRef.current.volume = muted ? 0 : volume / 100;
-  }, [muted, volume]);
+    applyVolume(muted, volume);
+  }, [applyVolume, muted, volume, audioUrl]);
 
-  // Apply playback speed when it changes
   useEffect(() => {
     if (audioRef.current) {
       audioRef.current.playbackRate = playbackSpeed;
     }
   }, [playbackSpeed]);
 
-  const togglePlay = () => {
+  useEffect(() => {
+    return () => {
+      if (audioContextRef.current) {
+        void audioContextRef.current.close().catch(() => {});
+      }
+    };
+  }, []);
+
+  const togglePlay = async () => {
     const audio = audioRef.current;
     if (!audio) return;
     if (isPlaying) {
       audio.pause();
     } else {
-      audio.play().catch(() => {});
+      await ensureWebAudioVolumeControl();
+      applyVolume(muted, volume);
+      audio.play().catch(() => {
+        setError("Playback could not start. Tap play again.");
+      });
     }
   };
 
@@ -156,7 +231,7 @@ export default function AudioPlayer({
   };
 
   const cycleSpeed = () => {
-    const currentIndex = PLAYBACK_SPEEDS.indexOf(playbackSpeed as typeof PLAYBACK_SPEEDS[number]);
+    const currentIndex = PLAYBACK_SPEEDS.indexOf(playbackSpeed as (typeof PLAYBACK_SPEEDS)[number]);
     const nextIndex = (currentIndex + 1) % PLAYBACK_SPEEDS.length;
     setPlaybackSpeed(PLAYBACK_SPEEDS[nextIndex]);
   };
@@ -165,6 +240,7 @@ export default function AudioPlayer({
     <div className="surface-card rounded-[2rem] p-5 sm:p-6 md:p-8">
       <audio
         ref={audioRef}
+        crossOrigin="anonymous"
         src={audioUrl || undefined}
         onTimeUpdate={() => setCurrentTime(audioRef.current?.currentTime || 0)}
         onDurationChange={() => setDuration(audioRef.current?.duration || 0)}
@@ -185,7 +261,6 @@ export default function AudioPlayer({
           {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
         </div>
 
-        {/* Progress bar */}
         <div className="space-y-2">
           <Slider value={[currentTime]} max={duration || 100} step={1} onValueChange={seek} className="cursor-pointer" />
           <div className="flex justify-between text-xs text-muted-foreground">
@@ -194,7 +269,6 @@ export default function AudioPlayer({
           </div>
         </div>
 
-        {/* Main controls */}
         <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-3">
           <button
             type="button"
@@ -211,11 +285,11 @@ export default function AudioPlayer({
             title="Back 30 seconds"
           >
             <RotateCcw className="size-4" />
-            <span className="absolute text-[8px] font-bold mt-0.5">30</span>
+            <span className="absolute mt-0.5 text-[8px] font-bold">30</span>
           </button>
           <button
             type="button"
-            onClick={togglePlay}
+            onClick={() => void togglePlay()}
             disabled={loading || !audioUrl}
             className="flex size-12 items-center justify-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 active:scale-95 disabled:opacity-60 disabled:active:scale-100 sm:size-14"
             title={isPlaying ? "Pause" : "Play"}
@@ -225,7 +299,7 @@ export default function AudioPlayer({
             ) : isPlaying ? (
               <Pause className="size-5 fill-current" />
             ) : (
-              <Play className="size-5 fill-current ml-0.5" />
+              <Play className="ml-0.5 size-5 fill-current" />
             )}
           </button>
           <button
@@ -235,7 +309,7 @@ export default function AudioPlayer({
             title="Forward 30 seconds"
           >
             <RotateCw className="size-4" />
-            <span className="absolute text-[8px] font-bold mt-0.5">30</span>
+            <span className="absolute mt-0.5 text-[8px] font-bold">30</span>
           </button>
           <button
             type="button"
@@ -247,24 +321,24 @@ export default function AudioPlayer({
           </button>
         </div>
 
-        {/* Speed + Volume row */}
         <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-center sm:gap-6">
-          {/* Playback speed */}
           <button
             type="button"
             onClick={cycleSpeed}
-            className="flex h-9 items-center justify-center rounded-full border border-border/80 bg-background/60 px-4 text-sm font-semibold text-foreground hover:bg-background/90 active:scale-95 transition-all"
+            className="flex h-9 items-center justify-center rounded-full border border-border/80 bg-background/60 px-4 text-sm font-semibold text-foreground transition-all hover:bg-background/90 active:scale-95"
             title="Change playback speed"
           >
             {playbackSpeed}x
           </button>
 
-          {/* Volume */}
           <div className="flex w-full max-w-[220px] items-center gap-2.5 sm:w-auto sm:max-w-none">
             <button
               type="button"
-              onClick={() => setMuted((current) => !current)}
-              className="shrink-0 rounded-full p-1.5 text-muted-foreground hover:bg-background/80 hover:text-foreground transition-colors"
+              onClick={() => {
+                setMuted((current) => !current);
+                void ensureWebAudioVolumeControl();
+              }}
+              className="shrink-0 rounded-full p-1.5 text-muted-foreground transition-colors hover:bg-background/80 hover:text-foreground"
               title={muted ? "Unmute" : "Mute"}
             >
               {muted || volume === 0 ? (
@@ -280,6 +354,9 @@ export default function AudioPlayer({
                 value={[muted ? 0 : volume]}
                 max={100}
                 step={1}
+                onPointerDown={() => {
+                  void ensureWebAudioVolumeControl();
+                }}
                 onValueChange={(value) => {
                   const nextVolume = typeof value === "number" ? value : value[0];
                   setVolume(nextVolume);
@@ -294,7 +371,10 @@ export default function AudioPlayer({
           </div>
         </div>
 
-        {/* Chapter list */}
+        {volumeHint && (
+          <p className="text-center text-xs text-muted-foreground">{volumeHint}</p>
+        )}
+
         <div className="border-t border-border/70 pt-5">
           <p className="mb-3 text-sm font-medium text-foreground">Chapters</p>
           <div className="max-h-56 space-y-2 overflow-y-auto pr-2 scrollbar-thin">
@@ -302,7 +382,7 @@ export default function AudioPlayer({
               <button
                 key={chapter.id}
                 type="button"
-                onClick={() => chapter.status === "ready" && void loadChapter(chapter.chapter_number)}
+                onClick={() => chapter.status === "ready" && void loadChapter(chapter.chapter_number, undefined, isPlaying)}
                 disabled={chapter.status !== "ready"}
                 className={`flex w-full items-center justify-between rounded-[1.2rem] border px-3 py-2.5 text-left text-sm transition sm:px-4 sm:py-3 ${
                   chapter.chapter_number === currentChapter

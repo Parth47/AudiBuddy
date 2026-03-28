@@ -177,7 +177,7 @@ export default function BookCard({ book: initialBook, onDeleted, onUpdated }: Bo
             </DropdownMenu>
           </div>}
 
-          <Link href={`/book/${book.id}`} className="block">
+          <Link href={`/book/${book.id}?autoplay=1`} className="block">
             <div className="surface-card interactive-surface overflow-hidden rounded-[1.5rem] p-1.5 sm:rounded-[2rem] sm:p-2">
               <div className="relative aspect-[3/4] overflow-hidden rounded-[1.2rem] border border-border/70 bg-gradient-to-br from-background via-muted/60 to-secondary/90 sm:rounded-[1.5rem]">
                 {book.cover_image_url ? (

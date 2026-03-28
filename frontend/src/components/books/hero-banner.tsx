@@ -40,7 +40,7 @@ export default function HeroBanner({ books }: { books: Book[] }) {
             </div>
 
             <div className="flex flex-wrap gap-3">
-              <Link href={`/book/${book.id}`}>
+              <Link href={`/book/${book.id}?autoplay=1`}>
                 <Button size="lg" className="h-11 rounded-full px-5">
                   <Play className="size-4 fill-current" />
                   <span>Listen Now</span>
