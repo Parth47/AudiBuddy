@@ -29,7 +29,7 @@ export default function HeroBanner({ books }: { books: Book[] }) {
         <div className="hero-orb bottom-[-10rem] right-[-6rem] h-80 w-80 text-foreground/20" />
 
         <div className="relative grid min-h-[400px] gap-6 px-4 py-6 sm:min-h-[500px] sm:gap-10 sm:px-6 sm:py-8 md:px-10 md:py-10 lg:min-h-[580px] lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:gap-12 lg:px-14 lg:py-14">
-          <div className="max-w-2xl space-y-7 animate-fade-in-up">
+          <div className="order-2 max-w-2xl space-y-7 animate-fade-in-up lg:order-1">
             <div className="space-y-3">
               <span className="apple-pill">Featured Listening</span>
               <h1 className="section-heading text-2xl sm:text-4xl lg:text-5xl xl:text-6xl">{book.title}</h1>
@@ -74,7 +74,7 @@ export default function HeroBanner({ books }: { books: Book[] }) {
             </div>
           </div>
 
-          <div className="relative flex items-center justify-center lg:justify-end">
+          <div className="order-1 relative mb-2 flex items-center justify-center lg:order-2 lg:mb-0 lg:justify-end">
             <div className="animate-float relative w-full max-w-[250px] sm:max-w-[320px] lg:max-w-[380px]">
               <div className="absolute inset-6 rounded-[2.25rem] border border-white/40 dark:border-white/10" />
               <div className="surface-card overflow-hidden rounded-[2.6rem] p-3">
