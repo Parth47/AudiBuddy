@@ -5,7 +5,10 @@
  * and no unnecessary wrapper overhead.
  */
 
+import { supabase } from "@/lib/supabase";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 
 // Default timeout for API calls (10s is plenty for DB queries; audio gen uses its own)
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -35,6 +38,15 @@ async function fetchAPI<T>(
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+function buildSupabasePublicUrl(bucket: string, path: string): string {
+  if (!SUPABASE_URL) {
+    throw new Error("Supabase URL is not configured");
+  }
+  const normalized = path.replace(/^\/+/, "");
+  const encoded = normalized.split("/").map(encodeURIComponent).join("/");
+  return `${SUPABASE_URL}/storage/v1/object/public/${bucket}/${encoded}`;
 }
 
 // --- Types ---
@@ -194,15 +206,115 @@ export interface Progress {
   last_played_at: string;
 }
 
+async function getBooksFromSupabase(
+  genre?: string,
+  limit = 20,
+  offset = 0
+): Promise<{ books: Book[]; total: number }> {
+  let countQuery = supabase
+    .from("books")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "ready");
+
+  let booksQuery = supabase
+    .from("books")
+    .select("*")
+    .eq("status", "ready")
+    .order("created_at", { ascending: false })
+    .range(offset, offset + limit - 1);
+
+  if (genre) {
+    countQuery = countQuery.eq("genre", genre);
+    booksQuery = booksQuery.eq("genre", genre);
+  }
+
+  const [{ count, error: countError }, { data, error: dataError }] = await Promise.all([
+    countQuery,
+    booksQuery,
+  ]);
+
+  if (countError) {
+    throw new Error(countError.message);
+  }
+  if (dataError) {
+    throw new Error(dataError.message);
+  }
+
+  return {
+    books: (data ?? []) as Book[],
+    total: count ?? (data?.length ?? 0),
+  };
+}
+
+async function getBookFromSupabase(id: string): Promise<Book | null> {
+  const { data, error } = await supabase
+    .from("books")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+  return (data as Book | null) ?? null;
+}
+
+async function getChaptersFromSupabase(bookId: string): Promise<Chapter[]> {
+  const { data, error } = await supabase
+    .from("chapters")
+    .select("id,book_id,chapter_number,title,duration_seconds,status,created_at")
+    .eq("book_id", bookId)
+    .order("chapter_number", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+  return (data ?? []) as Chapter[];
+}
+
+async function getAudioInfoFromSupabase(bookId: string, chapterNumber: number): Promise<AudioInfo | null> {
+  const { data, error } = await supabase
+    .from("chapters")
+    .select("status,audio_storage_path,duration_seconds")
+    .eq("book_id", bookId)
+    .eq("chapter_number", chapterNumber)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+  if (!data) {
+    return null;
+  }
+  if (data.status !== "ready" || !data.audio_storage_path) {
+    throw new Error("Audio not yet generated");
+  }
+
+  return {
+    audio_url: buildSupabasePublicUrl("audiobooks", data.audio_storage_path),
+    duration_seconds: data.duration_seconds ?? 0,
+  };
+}
+
 // --- Book APIs ---
 
 export async function getBooks(genre?: string): Promise<{ books: Book[]; total: number }> {
-  const params = new URLSearchParams();
-  if (genre) params.set("genre", genre);
-  return fetchAPI(`/api/books?${params}`);
+  try {
+    return await getBooksFromSupabase(genre);
+  } catch {
+    const params = new URLSearchParams();
+    if (genre) params.set("genre", genre);
+    return fetchAPI(`/api/books?${params}`);
+  }
 }
 
 export async function getBook(id: string): Promise<Book> {
+  try {
+    const book = await getBookFromSupabase(id);
+    if (book) return book;
+  } catch {
+    // Fallback to backend API
+  }
   return fetchAPI(`/api/books/${id}`);
 }
 
@@ -277,6 +389,12 @@ export async function retryWithFallback(bookId: string): Promise<Book> {
 // --- Chapter APIs ---
 
 export async function getChapters(bookId: string): Promise<Chapter[]> {
+  try {
+    const chapters = await getChaptersFromSupabase(bookId);
+    if (chapters.length > 0) return chapters;
+  } catch {
+    // Fallback to backend API
+  }
   return fetchAPI(`/api/chapters/book/${bookId}`);
 }
 
@@ -318,6 +436,12 @@ export function createSSEConnection(bookId: string): EventSource {
 }
 
 export async function getAudioStream(bookId: string, chapterNumber: number): Promise<AudioInfo> {
+  try {
+    const info = await getAudioInfoFromSupabase(bookId, chapterNumber);
+    if (info) return info;
+  } catch {
+    // Fallback to backend API
+  }
   return fetchAPI(`/api/audio/stream/${bookId}/${chapterNumber}`);
 }
 
@@ -328,22 +452,67 @@ export async function getQuotaCheck(bookId: string): Promise<QuotaCheck> {
 // --- Discovery APIs ---
 
 export async function getGenres(options?: RequestInit): Promise<{ genres: string[] }> {
-  return fetchAPI("/api/discover/genres", options);
+  try {
+    const { data, error } = await supabase
+      .from("books")
+      .select("genre")
+      .eq("status", "ready");
+
+    if (error) throw new Error(error.message);
+
+    const genres = Array.from(new Set((data ?? []).map((row) => row.genre).filter(Boolean))).sort();
+    return { genres };
+  } catch {
+    return fetchAPI("/api/discover/genres", options);
+  }
 }
 
 export async function getFeaturedBooks(options?: RequestInit): Promise<Book[]> {
-  return fetchAPI("/api/discover/featured", options);
+  try {
+    const { books } = await getBooksFromSupabase(undefined, 5, 0);
+    return books;
+  } catch {
+    return fetchAPI("/api/discover/featured", options);
+  }
 }
 
 export async function getBooksByGenre(genre: string, options?: RequestInit): Promise<Book[]> {
-  return fetchAPI(`/api/discover/by-genre/${encodeURIComponent(genre)}`, options);
+  try {
+    const { books } = await getBooksFromSupabase(genre, 10, 0);
+    return books;
+  } catch {
+    return fetchAPI(`/api/discover/by-genre/${encodeURIComponent(genre)}`, options);
+  }
 }
 
 export async function getRecentBooks(options?: RequestInit): Promise<Book[]> {
-  return fetchAPI("/api/discover/recent", options);
+  try {
+    const { books } = await getBooksFromSupabase(undefined, 10, 0);
+    return books;
+  } catch {
+    return fetchAPI("/api/discover/recent", options);
+  }
 }
 
 export async function getSimilarBooks(bookId: string): Promise<Book[]> {
+  try {
+    const sourceBook = await getBookFromSupabase(bookId);
+    if (sourceBook) {
+      const { data, error } = await supabase
+        .from("books")
+        .select("*")
+        .eq("status", "ready")
+        .eq("genre", sourceBook.genre)
+        .neq("id", bookId)
+        .order("created_at", { ascending: false })
+        .limit(6);
+
+      if (error) throw new Error(error.message);
+      return (data ?? []) as Book[];
+    }
+  } catch {
+    // Fallback to backend API
+  }
   return fetchAPI(`/api/discover/similar/${bookId}`);
 }
 
