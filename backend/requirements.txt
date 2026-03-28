@@ -1,0 +1,16 @@
+# Web framework
+fastapi==0.135.2
+uvicorn[standard]==0.42.0
+
+# PDF processing
+PyMuPDF==1.27.2.2
+
+# TTS - free Microsoft Edge voices (fallback provider, no API key needed)
+edge-tts==7.2.8
+
+# HTTP client (for Supabase REST API + TTS/LLM API calls)
+httpx==0.28.1
+
+# Utilities
+python-dotenv==1.2.2
+python-multipart==0.0.22

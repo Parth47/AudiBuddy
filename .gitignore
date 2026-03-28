@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Build
+.next/
+out/
+dist/
+build/
+*.egg-info/
+
+# Audio temp files
+backend/audio_output/*.wav
+backend/audio_output/*.mp3
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Chrome/browser automation artifacts
+.chrome-cdp/
+.chrome-test-profile/
+.edge-test-profile/
+
+# Claude/Cowork session files
+.claude/
+
+# Sample PDFs
+*.pdf
+
+# API key usage tracking (generated at runtime)
+backend/audio_output/.key_usage/
+
+# Supabase
+supabase/.temp/
+
+# Piper models (large files)
+backend/models/piper/*.onnx
+
+# Logs
+*.log

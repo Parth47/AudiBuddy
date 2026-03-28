@@ -1,0 +1,384 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --font-sans: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-heading: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --radius-sm: calc(var(--radius) * 0.55);
+  --radius-md: calc(var(--radius) * 0.78);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.32);
+  --radius-2xl: calc(var(--radius) * 1.78);
+  --radius-3xl: calc(var(--radius) * 2.18);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  --background: oklch(0.985 0.003 264);
+  --foreground: oklch(0.19 0.004 264);
+  --card: oklch(0.997 0.001 264 / 0.82);
+  --card-foreground: oklch(0.19 0.004 264);
+  --popover: oklch(0.997 0.001 264 / 0.88);
+  --popover-foreground: oklch(0.19 0.004 264);
+  --primary: oklch(0.18 0.004 264);
+  --primary-foreground: oklch(0.985 0.002 264);
+  --secondary: oklch(0.96 0.003 264);
+  --secondary-foreground: oklch(0.23 0.004 264);
+  --muted: oklch(0.952 0.003 264);
+  --muted-foreground: oklch(0.49 0.006 264);
+  --accent: oklch(0.94 0.004 264);
+  --accent-foreground: oklch(0.2 0.004 264);
+  --destructive: oklch(0.59 0.22 25);
+  --border: oklch(0.89 0.004 264 / 0.84);
+  --input: oklch(0.94 0.004 264 / 0.92);
+  --ring: oklch(0.42 0.01 264 / 0.28);
+  --chart-1: oklch(0.88 0.005 264);
+  --chart-2: oklch(0.72 0.004 264);
+  --chart-3: oklch(0.58 0.004 264);
+  --chart-4: oklch(0.43 0.004 264);
+  --chart-5: oklch(0.3 0.004 264);
+  --radius: 1.15rem;
+  --sidebar: oklch(0.985 0.002 264 / 0.92);
+  --sidebar-foreground: oklch(0.19 0.004 264);
+  --sidebar-primary: oklch(0.18 0.004 264);
+  --sidebar-primary-foreground: oklch(0.985 0.002 264);
+  --sidebar-accent: oklch(0.955 0.003 264);
+  --sidebar-accent-foreground: oklch(0.22 0.004 264);
+  --sidebar-border: oklch(0.9 0.004 264 / 0.84);
+  --sidebar-ring: oklch(0.52 0.01 264 / 0.22);
+  --app-glow-a: rgba(255, 255, 255, 0.86);
+  --app-glow-b: rgba(220, 227, 236, 0.72);
+  --app-grid: rgba(17, 24, 39, 0.035);
+  --surface-border-strong: rgba(15, 23, 42, 0.08);
+  --shadow-panel: 0 30px 80px -50px rgba(15, 23, 42, 0.26);
+  --shadow-lift: 0 26px 55px -32px rgba(15, 23, 42, 0.28);
+  --shadow-hero: 0 80px 180px -100px rgba(15, 23, 42, 0.34);
+  --hero-gradient: linear-gradient(140deg, rgba(255, 255, 255, 0.94) 0%, rgba(248, 250, 252, 0.85) 46%, rgba(233, 238, 245, 0.92) 100%);
+  --hero-pattern: radial-gradient(circle at 12% 18%, rgba(255, 255, 255, 0.95), transparent 32%), radial-gradient(circle at 84% 12%, rgba(226, 232, 240, 0.85), transparent 30%), linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0));
+}
+
+.dark {
+  --background: oklch(0.12 0.004 264);
+  --foreground: oklch(0.95 0.003 264);
+  --card: oklch(0.18 0.004 264 / 0.72);
+  --card-foreground: oklch(0.95 0.003 264);
+  --popover: oklch(0.18 0.004 264 / 0.86);
+  --popover-foreground: oklch(0.95 0.003 264);
+  --primary: oklch(0.96 0.003 264);
+  --primary-foreground: oklch(0.12 0.004 264);
+  --secondary: oklch(0.22 0.004 264);
+  --secondary-foreground: oklch(0.94 0.003 264);
+  --muted: oklch(0.2 0.004 264);
+  --muted-foreground: oklch(0.7 0.004 264);
+  --accent: oklch(0.24 0.004 264);
+  --accent-foreground: oklch(0.95 0.003 264);
+  --destructive: oklch(0.69 0.18 24);
+  --border: oklch(0.28 0.004 264 / 0.78);
+  --input: oklch(0.23 0.004 264 / 0.82);
+  --ring: oklch(0.78 0.004 264 / 0.24);
+  --chart-1: oklch(0.9 0.004 264);
+  --chart-2: oklch(0.75 0.004 264);
+  --chart-3: oklch(0.6 0.004 264);
+  --chart-4: oklch(0.42 0.004 264);
+  --chart-5: oklch(0.3 0.004 264);
+  --sidebar: oklch(0.17 0.004 264 / 0.9);
+  --sidebar-foreground: oklch(0.95 0.003 264);
+  --sidebar-primary: oklch(0.96 0.003 264);
+  --sidebar-primary-foreground: oklch(0.12 0.004 264);
+  --sidebar-accent: oklch(0.23 0.004 264);
+  --sidebar-accent-foreground: oklch(0.95 0.003 264);
+  --sidebar-border: oklch(0.28 0.004 264 / 0.8);
+  --sidebar-ring: oklch(0.72 0.004 264 / 0.18);
+  --app-glow-a: rgba(255, 255, 255, 0.08);
+  --app-glow-b: rgba(203, 213, 225, 0.08);
+  --app-grid: rgba(255, 255, 255, 0.04);
+  --surface-border-strong: rgba(255, 255, 255, 0.12);
+  --shadow-panel: 0 34px 90px -55px rgba(0, 0, 0, 0.72);
+  --shadow-lift: 0 34px 80px -40px rgba(0, 0, 0, 0.74);
+  --shadow-hero: 0 80px 220px -120px rgba(0, 0, 0, 0.8);
+  --hero-gradient: linear-gradient(145deg, rgba(18, 18, 20, 0.96) 0%, rgba(27, 31, 37, 0.88) 42%, rgba(12, 12, 13, 0.98) 100%);
+  --hero-pattern: radial-gradient(circle at 14% 16%, rgba(255, 255, 255, 0.1), transparent 28%), radial-gradient(circle at 86% 18%, rgba(255, 255, 255, 0.08), transparent 24%), linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0));
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    @apply font-sans scroll-smooth;
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply min-h-screen bg-background text-foreground antialiased;
+    position: relative;
+    overflow-x: hidden;
+    isolation: isolate;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    /* Static background instead of fixed-attachment (which kills scroll perf) */
+    background-image:
+      radial-gradient(circle at 0% 0%, var(--app-glow-a), transparent 36%),
+      radial-gradient(circle at 100% 0%, var(--app-glow-b), transparent 28%);
+  }
+
+  /*
+   * Lightweight grid pattern using a static positioned pseudo-element
+   * instead of fixed+mask which forced full-page compositing on every scroll.
+   */
+  body::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -2;
+    pointer-events: none;
+    background-image:
+      linear-gradient(to right, var(--app-grid) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--app-grid) 1px, transparent 1px);
+    background-size: 120px 120px;
+    opacity: 0.45;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, currentColor 12%, transparent);
+  }
+}
+
+@layer components {
+  .page-shell {
+    @apply mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8;
+  }
+
+  .section-kicker {
+    @apply text-[0.72rem] font-medium uppercase tracking-[0.28em] text-muted-foreground;
+  }
+
+  .section-heading {
+    @apply text-3xl font-semibold tracking-tight text-foreground md:text-5xl;
+    text-wrap: balance;
+  }
+
+  .section-copy {
+    @apply text-sm leading-6 text-muted-foreground md:text-base;
+    text-wrap: balance;
+  }
+
+  .glass-nav {
+    @apply border border-border/70 bg-card/75 backdrop-blur-lg;
+    box-shadow: var(--shadow-panel);
+  }
+
+  .glass-panel {
+    @apply border border-border/70 bg-card/70 backdrop-blur-lg;
+    box-shadow: var(--shadow-panel);
+  }
+
+  .surface-card {
+    @apply rounded-[2rem] border border-border/70 bg-card/70 backdrop-blur-lg;
+    box-shadow: var(--shadow-panel);
+  }
+
+  .interactive-surface {
+    @apply transition-transform duration-200 ease-out;
+    transform-origin: center;
+    will-change: transform;
+  }
+
+  .interactive-surface:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-lift);
+  }
+
+  .interactive-surface:active {
+    transform: translateY(-1px) scale(0.99);
+    transition-duration: 80ms;
+  }
+
+  .hero-panel {
+    @apply relative overflow-hidden rounded-[2.4rem] border border-border/70;
+    background: var(--hero-gradient);
+    box-shadow: var(--shadow-hero);
+  }
+
+  .hero-panel::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--hero-pattern);
+    pointer-events: none;
+  }
+
+  .hero-orb {
+    @apply absolute rounded-full blur-3xl;
+    background: radial-gradient(circle, color-mix(in srgb, currentColor 12%, transparent), transparent 68%);
+    opacity: 0.45;
+  }
+
+  .theme-toggle-button {
+    @apply h-10 rounded-full border-border/80 bg-background/70 px-4 text-sm font-medium text-foreground shadow-none hover:bg-background/90;
+  }
+
+  .apple-link {
+    @apply text-sm font-medium text-muted-foreground transition-colors duration-150 hover:text-foreground;
+  }
+
+  .apple-input {
+    @apply h-11 rounded-full border-border/80 bg-background/65 px-4 text-foreground placeholder:text-muted-foreground;
+  }
+
+  .apple-field {
+    @apply rounded-[1.5rem] border border-border/80 bg-background/55 px-4 py-3 text-foreground shadow-none transition-colors duration-150 placeholder:text-muted-foreground focus:border-foreground/20 focus:outline-none;
+  }
+
+  .apple-drop-zone {
+    @apply rounded-[2rem] border border-dashed border-border/80 bg-card/45 transition-all duration-200 hover:border-foreground/20 hover:bg-card/70;
+  }
+
+  .apple-pill {
+    @apply inline-flex items-center rounded-full border border-border/70 bg-background/60 px-4 py-2 text-xs font-medium tracking-[0.2em] uppercase text-muted-foreground;
+  }
+}
+
+/*
+ * Theme switching transitions — ONLY on explicitly themed properties, and
+ * ONLY on the root element. The old rule applied transitions to every single
+ * DOM element which destroyed scroll/interaction performance.
+ */
+html.theme-transitioning,
+html.theme-transitioning *,
+html.theme-transitioning *::before,
+html.theme-transitioning *::after {
+  transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease !important;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 5px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 999px;
+}
+
+.line-clamp-3 {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(200%);
+  }
+}
+
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  50% {
+    transform: translateX(200%);
+  }
+  100% {
+    transform: translateX(-100%);
+  }
+}
+
+.animate-shimmer {
+  animation: shimmer 2s infinite;
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+.animate-float {
+  animation: float 7s ease-in-out infinite;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in-up,
+  .animate-float,
+  .animate-shimmer {
+    animation: none !important;
+  }
+}
