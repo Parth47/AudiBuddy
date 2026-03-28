@@ -22,6 +22,7 @@ _TTS_CHUNK_TIMEOUT = 60
 _TTS_MAX_RETRIES = 3
 _MIN_VALID_MP3_BYTES = 256
 _SENTENCE_BOUNDARY_CHARS = ".!?।॥"
+_DEVANAGARI_STORY_CHUNK_MIN = 2200
 
 _ELEVENLABS_MONTHLY_CHAR_LIMIT = int(
     settings.ELEVENLABS_MONTHLY_CHAR_LIMIT
@@ -74,6 +75,26 @@ def _normalize_language(language: str | None) -> str:
     return aliases.get(value, value if value in {"en", "hi", "mr", "mixed"} else "en")
 
 
+def _is_devanagari_story_language(language: str | None) -> bool:
+    return _normalize_language(language) in {"hi", "mr", "mixed"}
+
+
+def _prepare_storytelling_text(text: str, language: str | None) -> str:
+    """Lightweight text shaping to produce better narrative pacing."""
+    normalized = re.sub(r"[ \t]+", " ", text).strip()
+    if not normalized:
+        return ""
+
+    if _is_devanagari_story_language(language):
+        # Encourage natural pauses for Hindi/Marathi narration.
+        normalized = re.sub(r"\s*([।॥])\s*", r"\1\n", normalized)
+        normalized = re.sub(r"\s*([!?])\s*", r"\1\n", normalized)
+        normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+        return normalized.strip()
+
+    return normalized
+
+
 def _split_long_sentence(sentence: str, max_chars: int) -> list[str]:
     """Split very long sentences on whitespace if needed."""
     sentence = sentence.strip()
@@ -98,13 +119,22 @@ def _split_long_sentence(sentence: str, max_chars: int) -> list[str]:
     return parts
 
 
-def split_text_into_chunks(text: str, max_chars: int | None = None) -> list[str]:
+def split_text_into_chunks(
+    text: str,
+    max_chars: int | None = None,
+    language: str | None = None,
+) -> list[str]:
     """Split long text into chunks using sentence boundaries."""
+    normalized_language = _normalize_language(language)
     max_chars = max_chars or settings.TTS_CHUNK_SIZE
-    if len(text) <= max_chars:
-        return [text]
+    if _is_devanagari_story_language(normalized_language):
+        max_chars = max(max_chars, _DEVANAGARI_STORY_CHUNK_MIN)
 
-    normalized = re.sub(r"\s+", " ", text).strip()
+    prepared = _prepare_storytelling_text(text, normalized_language)
+    if len(prepared) <= max_chars:
+        return [prepared]
+
+    normalized = re.sub(r"\s+", " ", prepared).strip()
     if not normalized:
         return [""]
 
@@ -181,13 +211,18 @@ async def _elevenlabs_tts(text: str, language: str = "en") -> bytes:
         "Accept": "audio/mpeg",
     }
     normalized_language = _normalize_language(language)
+    prepared_text = _prepare_storytelling_text(text, normalized_language)
+    if not prepared_text:
+        raise ValueError("No text to convert to audio after normalization.")
+
+    is_devanagari_story = _is_devanagari_story_language(normalized_language)
     payload = {
-        "text": text,
+        "text": prepared_text,
         "model_id": model_id,
         "voice_settings": {
-            "stability": 0.45,
-            "similarity_boost": 0.75,
-            "style": 0.1 if normalized_language in {"hi", "mr", "mixed"} else 0.0,
+            "stability": 0.32 if is_devanagari_story else 0.45,
+            "similarity_boost": 0.82 if is_devanagari_story else 0.75,
+            "style": 0.40 if is_devanagari_story else 0.05,
             "use_speaker_boost": True,
         },
     }
@@ -204,7 +239,7 @@ async def _elevenlabs_tts(text: str, language: str = "en") -> bytes:
 
         audio_bytes = response.content
         _elevenlabs_keys.report_success(key)
-        _elevenlabs_keys.report_chars_used(key, len(text))
+        _elevenlabs_keys.report_chars_used(key, len(prepared_text))
         return audio_bytes
     except httpx.RequestError as exc:
         _elevenlabs_keys.report_failure(key, error_msg=str(exc))
@@ -351,27 +386,31 @@ async def generate_chapter_audio(
     if not text or not text.strip():
         raise ValueError("No text to convert to audio")
 
-    chunks = split_text_into_chunks(text)
+    normalized_language = _normalize_language(language)
+    chunks = split_text_into_chunks(text, language=normalized_language)
     total = len(chunks)
 
     if total == 0:
         raise ValueError("No text to convert to audio")
 
     if total == 1:
-        if _normalize_language(language) == "en":
+        if normalized_language == "en":
             audio = await text_to_mp3_bytes(chunks[0])
         else:
-            audio = await text_to_mp3_bytes(chunks[0], language)
+            audio = await text_to_mp3_bytes(chunks[0], normalized_language)
         if on_chunk_complete:
             on_chunk_complete(1, 1)
         return audio
 
     max_parallel = settings.TTS_PARALLEL_CHUNKS
+    if _is_devanagari_story_language(normalized_language):
+        # Sequential chunking keeps voice prosody more consistent for story narration.
+        max_parallel = 1
+
     semaphore = asyncio.Semaphore(max_parallel)
     results: list[bytes | Exception] = [b""] * total
     completed_count = 0
     lock = asyncio.Lock()
-    normalized_language = _normalize_language(language)
 
     async def _process_chunk(index: int, chunk_text: str) -> None:
         nonlocal completed_count

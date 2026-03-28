@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import re
+from pathlib import Path
 from urllib.parse import unquote
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
@@ -57,6 +59,22 @@ async def _cleanup_storage_assets(files_to_delete: list[tuple[str, str]]) -> Non
             await db.delete_files(bucket, paths, ignore_missing=True)
         except Exception as exc:
             logger.warning("Failed to delete storage assets from %s: %s", bucket, exc)
+
+
+def _safe_pdf_storage_filename(filename: str) -> str:
+    """Create a Supabase-safe ASCII filename while preserving .pdf extension."""
+    suffix = Path(filename or "").suffix.lower()
+    if suffix != ".pdf":
+        suffix = ".pdf"
+
+    stem = Path(filename or "").stem
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("._-")
+    if not stem:
+        stem = "uploaded-book"
+
+    # Avoid very long object names; keep room for extension.
+    stem = stem[:80]
+    return f"{stem}{suffix}"
 
 
 async def _mark_llm_failed_status(book_id: str) -> None:
@@ -171,7 +189,20 @@ async def upload_book(
     try:
         # 2. Upload PDF to storage
         storage_path = f"{book_id}/{file.filename}"
-        await db.upload_file("pdfs", storage_path, pdf_bytes, "application/pdf")
+        try:
+            await db.upload_file("pdfs", storage_path, pdf_bytes, "application/pdf")
+        except Exception as exc:
+            # Fallback for filenames that some storage backends reject (unicode/special chars).
+            fallback_name = _safe_pdf_storage_filename(file.filename or "")
+            fallback_storage_path = f"{book_id}/{fallback_name}"
+            logger.warning(
+                "Primary PDF upload path failed (%s). Retrying with sanitized name: %s",
+                exc,
+                fallback_name,
+            )
+            await db.upload_file("pdfs", fallback_storage_path, pdf_bytes, "application/pdf")
+            storage_path = fallback_storage_path
+
         await db.update("books", {"pdf_storage_path": storage_path}, {"id": book_id})
 
         # 3. Upload cover image if provided
