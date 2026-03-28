@@ -61,3 +61,4 @@ audi-buddy/
 ## Quick Start
 
 See each step's section in the docs for setup instructions.
+"# AudiBuddy" 
